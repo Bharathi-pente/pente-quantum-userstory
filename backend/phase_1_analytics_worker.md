@@ -15,10 +15,12 @@ The analytics worker is the **cold path** — it prioritizes throughput and corr
 ### Pipeline Position
 
 ```
-Phase 0                          Phase 1                           Phase 2+
-Ingest API → Kafka ────────────→ Analytics Worker → ClickHouse → Dashboards/APIs
-                                  (this service)
+Phase 0                          Phase 1                           Phase 2 (TBD)        Phase 3+     Phase 4
+Ingest API → Kafka ────────────→ Analytics Worker → ClickHouse → Billing Worker → Redis → Key Mgmt → Dashboards/APIs
+                                  (this service)                   (next phase)
 ```
+
+> **Note:** Phase 2 is reserved for the **Billing Worker** (Kafka → Redis real-time counters + WebSocket balance updates). It is not yet defined in this specification. Phase 3 (Key Management) and Phase 4 (Aggregation APIs) follow.
 
 ---
 
@@ -44,7 +46,7 @@ Ingest API → Kafka ────────────→ Analytics Worker �
 | 9 | Batch-inserts up to 50,000 events per `INSERT` statement using prepared batches |
 | 10 | Computes `total_tokens` as `input_tokens + output_tokens` if not explicitly provided |
 | 11 | Defaults `source_mode` to `"direct_ingest"` if empty |
-| 12 | Serializes `metadata` map to a JSON string for the ClickHouse column |
+| 12 | Passes `metadata` map (`map[string]string`) directly to the ClickHouse `Map(String, String)` column via the Go driver — no manual serialization |
 | 13 | Individual event append failures are skipped (logged, not retried) |
 | 14 | Entire batch send failures trigger a retry of the whole batch on the next flush cycle |
 
@@ -216,7 +218,7 @@ IDLE → Kafka Fetch → ACCUMULATING → Size=50k or Time=10s → FLUSHING → 
 - **Dedup at query time:** `ReplacingMergeTree` merges are asynchronous. The `usage_events_dedup_v` view with `argMax` guarantees dedup at query time without waiting for a merge.
 - **No dead-letter queue:** Malformed events are dropped with a log. The Kafka offset is NOT committed for those messages, so they will be retried on restart — giving operators a chance to fix the upstream producer.
 - **`total_tokens` computation:** If the event has `total_tokens = 0`, the worker computes it as `input_tokens + output_tokens`. This handles clients that only send input/output without the sum.
-- **Metadata storage:** ClickHouse column is `String` storing a serialized JSON string for flexibility. The metadata map is marshaled to a JSON string in Go before insertion. Downstream queries extract keys using ClickHouse JSON functions (e.g. `JSONExtractString`) as needed.
+- **Metadata storage:** ClickHouse column is `Map(String, String)`. The Go driver natively maps `map[string]string` to this type — no manual JSON serialization needed. Downstream queries use ClickHouse map accessors (`metadata['key']`) to extract fields.
 
 ---
 

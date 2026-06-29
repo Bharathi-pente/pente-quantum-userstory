@@ -3,6 +3,8 @@
 > **Status:** Greenfield Specification | **Scope:** Build the Control Plane CRUD APIs for managing organization keys, tenant registers, encrypted BYOK credentials, and security logs in the unified event billing engine.
 >
 > This is the **Phase 3 blueprint** — the control plane specification. It defines the key management APIs through which platform operators and organizations generate, rotate, and revoke virtual, direct-ingest, and BYOK credentials. It also covers secure storage of third-party credentials via AES-256-GCM and the creation of the security audit trail.
+>
+> **Note:** Phase 2 is reserved for the **Billing Worker** (Kafka → Redis real-time token counters + WebSocket balance push). It is defined separately and not included in this specification.
 
 ---
 

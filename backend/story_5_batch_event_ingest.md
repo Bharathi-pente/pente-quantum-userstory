@@ -2,7 +2,7 @@
 
 > **Phase:** 0 — Core Event Ingestion Pipeline
 > **Depends on:** Story 1 (domain types), Story 2 (auth middleware), Story 3 (cache synchronization), Story 4 (single event patterns — Kafka writer, Redis idempotency, org/user cache)
-> **Blocks:** Story 6 (migrations, health & observability)
+> **Blocks:** Nothing (this is the last ingest-specific story. Story 6 can be developed in parallel.)
 
 ---
 
