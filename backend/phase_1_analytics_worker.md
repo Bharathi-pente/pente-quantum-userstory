@@ -216,7 +216,7 @@ IDLE → Kafka Fetch → ACCUMULATING → Size=50k or Time=10s → FLUSHING → 
 - **Dedup at query time:** `ReplacingMergeTree` merges are asynchronous. The `usage_events_dedup_v` view with `argMax` guarantees dedup at query time without waiting for a merge.
 - **No dead-letter queue:** Malformed events are dropped with a log. The Kafka offset is NOT committed for those messages, so they will be retried on restart — giving operators a chance to fix the upstream producer.
 - **`total_tokens` computation:** If the event has `total_tokens = 0`, the worker computes it as `input_tokens + output_tokens`. This handles clients that only send input/output without the sum.
-- **Metadata storage:** ClickHouse column is `Map(String, String)`. The Go driver natively maps `map[string]string` to this type — no manual JSON serialization needed. Downstream queries use ClickHouse map accessors (`metadata['key']`) to extract fields.
+- **Metadata storage:** ClickHouse column is `String` storing a serialized JSON string for flexibility. The metadata map is marshaled to a JSON string in Go before insertion. Downstream queries extract keys using ClickHouse JSON functions (e.g. `JSONExtractString`) as needed.
 
 ---
 

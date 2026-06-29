@@ -44,7 +44,7 @@ This story delivers the cross-cutting concerns that make the ingest service obse
 | 16 | `unit` column defined as `String DEFAULT 'tokens'` |
 | 17 | `cost` column defined as `String DEFAULT '0'` (stored as String to prevent float truncation/precision drift in ingest path) |
 | 18 | `total_tokens` column defined as `Float64 DEFAULT 0` |
-| 19 | `metadata` column defined as `Map(String, String)` |
+| 19 | `metadata` column defined as `String DEFAULT ''` (stored as JSON string) |
 | 20 | Creates `events.usage_events_dedup_v` view using `argMax(column, ingested_at)` grouped by `(org_id, tenant_id, event_id)` — includes `session_id`, `source_mode`, `key_id`, `unit`, `cost`, `total_tokens`, and `thinking_tokens` in its projection |
 | 21 | Migration is idempotent: uses `CREATE TABLE IF NOT EXISTS` and `CREATE OR REPLACE VIEW` |
 | 22 | Both migrations tested against a local PostgreSQL and ClickHouse instance before being marked complete |
