@@ -19,7 +19,7 @@ As a **platform operator**, I need a background cache synchronization daemon (or
 | # | Criterion |
 |---|---|
 | 1 | On application startup, query all active API keys, active organizations, and user memberships from PostgreSQL. |
-| 2 | Populate Redis cache with warming data: `apikey:{key}` (JSON context), `org:{org_id}` (existence flag), and `org:{org_id}:user:{user_id}` (membership flag). |
+| 2 | Populate Redis cache with warming data: `apikey:{hashed_key}` (JSON context), `org:{org_id}` (existence flag), and `org:{org_id}:user:{user_id}` (membership flag). |
 | 3 | Cache warming must be non-blocking (run in a background goroutine) and log the count of loaded records. |
 
 ### Real-Time Key Synchronization
@@ -27,7 +27,7 @@ As a **platform operator**, I need a background cache synchronization daemon (or
 | # | Criterion |
 |---|---|
 | 4 | Provide a synchronization handler or write-through interface to sync keys created or modified via the control plane. |
-| 5 | When an API key is created in PostgreSQL $\rightarrow$ immediately insert/overwrite the corresponding `KeyContext` in Redis under key `apikey:{key_value}`. |
+| 5 | When an API key is created in PostgreSQL $\rightarrow$ immediately insert/overwrite the corresponding `KeyContext` in Redis under key `apikey:{hashed_key}`. |
 | 6 | When an API key status changes to `'revoked'` or `'expired'` in PostgreSQL $\rightarrow$ delete the key from Redis or update status to `revoked`/`expired` immediately to ensure lockout. |
 
 ### Cache Eviction and TTLs
@@ -35,7 +35,7 @@ As a **platform operator**, I need a background cache synchronization daemon (or
 | # | Criterion |
 |---|---|
 | 7 | Organization existence flags `org:{org_id}` and user memberships `org:{org_id}:user:{user_id}` are set with a cache TTL of 1 hour (`3600` seconds) to allow natural drift recovery. |
-| 8 | API key contexts `apikey:{key_value}` are stored with no TTL (persistent) and evicted only via explicit revocation/expiration. |
+| 8 | API key contexts `apikey:{hashed_key}` are stored with no TTL (persistent) and evicted only via explicit revocation/expiration. |
 
 ---
 
@@ -43,9 +43,9 @@ As a **platform operator**, I need a background cache synchronization daemon (or
 
 | # | Test | Expected |
 |---|---|---|
-| TC-01 | Create key in Postgres, trigger sync | Redis key `apikey:{key}` exists and matches the new context |
+| TC-01 | Create key in Postgres, trigger sync | Redis key `apikey:{hashed_key}` exists and matches the new context |
 | TC-02 | Start sync worker with existing database records | Cache is pre-populated with all database keys and active orgs |
-| TC-03 | Revoke key in Postgres, trigger sync | Redis key `apikey:{key}` is deleted or status changed to revoked |
+| TC-03 | Revoke key in Postgres, trigger sync | Redis key `apikey:{hashed_key}` is deleted or status changed to revoked |
 | TC-04 | Key expires in Postgres | Redis key evicted or updated to `expired` status |
 | TC-05 | Add new user-org membership | Redis cache gets `org:{org_id}:user:{user_id}` flag set with 1-hour TTL |
 
@@ -55,7 +55,7 @@ As a **platform operator**, I need a background cache synchronization daemon (or
 
 | Key / Table | Operation | Purpose |
 |---|---|---|
-| `apikey:{key_value}` (Redis) | `SET`, `DEL` | Key contexts stored in cache |
+| `apikey:{hashed_key}` (Redis) | `SET`, `DEL` | Key contexts stored in cache |
 | `org:{org_id}` (Redis) | `SETEX` | Warm organization existence cache (TTL 1h) |
 | `org:{org_id}:user:{user_id}` (Redis) | `SETEX` | Warm user membership cache (TTL 1h) |
 | `organizations` (Postgres) | `SELECT` | Read active organizations at startup |

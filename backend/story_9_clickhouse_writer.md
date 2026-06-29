@@ -42,7 +42,7 @@ The writer must handle per-event append failures (skip the bad event, continue w
 |---|---|
 | 11 | If `event.TotalTokens == 0`, compute as `float64(event.InputTokens + event.OutputTokens)` |
 | 12 | If `event.SourceMode == ""`, default to `"direct_ingest"` |
-| 13 | Pass `event.Metadata` (Go `map[string]string`) directly to the ClickHouse `Map(String, String)` column via the Go driver — no manual JSON serialization needed. If empty or nil, pass an empty map `map[string]string{}` |
+| 13 | Marshal `event.Metadata` to a JSON string and pass the resulting string to the ClickHouse `String` column. If empty or nil, pass the empty JSON object string `"{}"` |
 | 14 | Set `ingested_at` to `time.Now()` (server-side timestamp for dedup ordering) |
 
 ### Error Handling
@@ -71,8 +71,8 @@ The writer must handle per-event append failures (skip the bad event, continue w
 | TC-01 | Insert 100 valid events into ClickHouse | All 100 queryable in `usage_events_dedup_v` |
 | TC-02 | Insert event with `total_tokens = 0`, `input_tokens = 100`, `output_tokens = 50` | `total_tokens` stored as `150.0` |
 | TC-03 | Insert event with empty `source_mode` | Stored as `"direct_ingest"` |
-| TC-04 | Insert event with `metadata = {"provider": "openai", "request_id": "req_1"}` | `metadata` column stores as ClickHouse `Map(String, String)` with correct key-value pairs |
-| TC-05 | Insert event with nil `metadata` | `metadata` column stores as empty map |
+| TC-04 | Insert event with `metadata = {"provider": "openai", "request_id": "req_1"}` | `metadata` column stores as ClickHouse `String` containing the correct JSON representation |
+| TC-05 | Insert event with nil `metadata` | `metadata` column stores as empty JSON object `"{}"` |
 | TC-06 | Insert same `(org_id, tenant_id, event_id)` twice | `usage_events` table has 2 rows; `usage_events_dedup_v` returns only the latest |
 | TC-07 | Insert event with all fields populated | All columns match, no truncation or type errors |
 | TC-08 | Insert batch of 50,000 events | All 50,000 inserted, < 5s duration |
@@ -112,7 +112,7 @@ The writer must handle per-event append failures (skip the bad event, continue w
 - **Batch API:** Use `conn.PrepareBatch(ctx, "INSERT INTO events.usage_events (...)")` followed by `batch.Append(...)` for each event, then `batch.Send()`. This compiles the INSERT once and streams values — much faster than individual INSERTs.
 - **Column order matters:** `Append` arguments must match the column order in the `INSERT INTO` statement exactly. Use a constant for the column list to avoid misalignment.
 - **`total_tokens` as Float64:** ClickHouse stores `Float64`. The Go `float64(event.InputTokens + event.OutputTokens)` is safe — both are integers that fit in float64 exactly up to 2^53.
-- **`metadata` as String:** The Phase 0 Story 6 ClickHouse migration defines `metadata` as `Map(String, String)`. Use the `Map(String, String)` type directly — ClickHouse's Go driver supports `map[string]string` natively. This avoids serialization overhead.
+- **`metadata` as String:** The Phase 0 Story 6 ClickHouse migration defines `metadata` as `String`. Marshal the `map[string]string` to a JSON string in Go before appending it to the ClickHouse batch to maintain schema consistency and compatibility with the analytics APIs.
 - **`cost` as String:** The `cost` column in ClickHouse is defined as `String` to map directly to the Go `Cost string` struct field, preventing precision loss/float rounding drift during batch transport. Downstream components parse it to `decimal.Decimal` if math is needed.
 - **Dedup is eventual:** `ReplacingMergeTree` merges happen in the background. The `usage_events_dedup_v` view with `argMax` guarantees query-time dedup regardless of merge state. All downstream queries (dashboards, aggregation APIs) must read from the dedup view, never the raw table.
 - **Connection pooling:** The `clickhouse-go/v2` driver handles connection pooling internally via `MaxOpenConns`. One `Conn` instance is shared across all goroutines (thread-safe).
