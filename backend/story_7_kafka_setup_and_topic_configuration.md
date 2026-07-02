@@ -1,5 +1,7 @@
 # Story 7 — Kafka (KRaft) Setup & Topic Configuration
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 0 — Core Event Ingestion Pipeline / Infrastructure
 > **Depends on:** `event-engine-net` network creation
 > **Blocks:** Story 4, Story 5, Story 8 (requires broker and topic to exist)
@@ -36,7 +38,7 @@ All required topics (specifically the high-throughput `usage-events` topic with 
 | 9 | Auto-creates `usage-events` topic with **32 partitions** and replication factor of 1 if it does not exist. |
 | 10 | Auto-creates `raw-events` topic with **32 partitions** and replication factor of 1. |
 | 11 | Auto-creates `analytics-events` and `billing-events` topics with **16 partitions**. |
-| 12 | Auto-creates compacted aggregation topics `tenant-aggs-1min`, `tenant-aggs-5min`, `user-aggs-1min`, `user-aggs-5min` with `cleanup.policy=compact` and **16/32 partitions**. |
+| 12 | Auto-creates compacted aggregation topics `customer-aggs-1min`, `customer-aggs-5min`, `enduser-aggs-1min`, `enduser-aggs-5min` with `cleanup.policy=compact` and **16/32 partitions**. |
 | 13 | Disable broker-side auto-topic creation (`KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'`) to prevent clients from auto-creating topics with default settings (e.g. 1 partition) before `kafka-init` completes. Alternatively, configure the ingest API's readiness probe to verify that the `usage-events` topic exists with exactly 32 partitions before reporting healthy. |
 
 ### Monitoring & Management UI (`kafka-ui` / `otel-collector`)

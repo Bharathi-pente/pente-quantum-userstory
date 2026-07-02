@@ -1,5 +1,7 @@
 # QuantumBilling User Story: Alerts
 
+> Aligned with ADR-001 (2026-07-01).
+
 ## QB-STORY-010 — Sprint 2 — Phase: Feature
 
 ---
@@ -24,14 +26,16 @@ Key capabilities:
 - **Alert-Channel Mapping** (`developer.alert_channel_map`): many-to-many relationship — one alert can notify multiple channels, one channel can receive from multiple alerts
 - **Alert History** (`developer.alert_history`): record of every alert trigger with delivery status per channel
 - **Alert Types**:
-  - `usage` — meter usage exceeds threshold
+  - `usage` — meter usage exceeds threshold (evaluated against Redis counters / ClickHouse rollups — see notes)
   - `billing` — invoice overdue, payment failed, credit balance low
   - `customer` — customer health score drops, subscription changed
   - `churn` — churn risk indicators
   - `revenue` — MRR drop, revenue anomaly
+  - `wallet_low_balance` — prepaid wallet balance crosses `low_balance_threshold` (CR-2)
+  - `auto_topup_failure` — wallet auto top-up charge failed (CR-2; also feeds dunning)
 - **Condition Expression** (`condition_expr`): boolean expression evaluated against metrics (e.g. `usage['api_calls'] > 100000` or `mrr < prev_mrr * 0.9`)
 - **Channel Configuration** (`config`): channel-specific JSON config — email address list, Slack webhook URL, webhook URL + headers, PagerDuty routing key
-- **Delivery Tracking**: `billing.notification_delivery_log` records delivery attempts; `developer.alert_history` records per-alert, per-channel trigger history
+- **Delivery Tracking**: `communication.notification_delivery_log` (canonical schema: `communication` — conflict C-9) records delivery attempts; `developer.alert_history` records per-alert, per-channel trigger history
 - **SUPER_ADMIN** can view and manage any org's alerts and channels
 
 ---
@@ -51,21 +55,21 @@ Key capabilities:
 ## Acceptance Criteria
 
 1. ORG_ADMIN or DEVELOPER can create an alert via `POST /api/v1/alerts` with `name`, `alert_type`, `condition_expr`, `threshold`, and `status`.
-2. Alert types are restricted to: `usage`, `billing`, `customer`, `churn`, `revenue` as defined in `developer_alert_type` enum (maps to postgres enum values: `usage_threshold | budget_threshold | error_rate | latency | custom | billing | customer | churn | revenue`).
+2. Alert types are restricted to: `usage`, `billing`, `customer`, `churn`, `revenue`, `wallet_low_balance`, `auto_topup_failure` — the ERD §6 `developer.alerts.alert_type` set (`USAGE|BILLING|CUSTOMER|CHURN|REVENUE`) extended with the two wallet types per CR-2.
 3. `GET /api/v1/alerts` lists all alerts for the org with pagination (default 20/page), filterable by `alert_type` and `status`.
-4. `PUT /api/v1/alerts/:alertId` updates an alert's configuration; changing `condition_expr` or `threshold` records a version in `compliance.audit_logs`.
+4. `PUT /api/v1/alerts/:alertId` updates an alert's configuration; changing `condition_expr` or `threshold` records a version in `platform.audit_logs` (C-7).
 5. `DELETE /api/v1/alerts/:alertId` soft-deletes the alert (sets `deleted_at`); active alerts cannot be deleted — must set `status = disabled` first.
 6. ORG_ADMIN or DEVELOPER can create a notification channel via `POST /api/v1/alert-channels` with `name`, `channel_type`, and `config`.
-7. Channel types: `email` (config: `{recipients: string[]}`), `slack` (config: `{webhook_url: string, channel?: string}`), `webhook` (config: `{url: string, headers?: Json, method?: string}`), `pagerduty` (config: `{routing_key: string, severity?: string}`).
+7. Channel types (ERD §6 `developer.alert_channels.channel_type` = `EMAIL|SLACK|WEBHOOK|PAGERDUTY|SMS`): `email` (config: `{recipients: string[]}`), `slack` (config: `{webhook_url: string, channel?: string}`), `webhook` (config: `{url: string, headers?: Json, method?: string}`), `pagerduty` (config: `{routing_key: string, severity?: string}`), `sms` (config: `{phone_numbers: string[]}`).
 8. `GET /api/v1/alert-channels` lists all channels for the org.
 9. `PUT /api/v1/alert-channels/:channelId` updates channel `config`; changing `channel_type` is not allowed after creation.
 10. `DELETE /api/v1/alert-channels/:channelId` soft-deletes the channel; alerts mapped to this channel are not deleted but are silently skipped during trigger.
 11. `POST /api/v1/alerts/:alertId/channels` maps one or more channels to an alert; `DELETE /api/v1/alerts/:alertId/channels/:channelId` removes a mapping.
 12. Alert channels are stored in `developer.alert_channel_map` with the mapping.
-13. Alert evaluation runs as a scheduled job (cron) that evaluates all `active` alerts against current metrics from `customer.usage_summary`, `billing.invoices`, `customer.customers`, `intelligence.customer_health_scores`.
+13. Alert evaluation runs as a scheduled job (cron) that evaluates all `active` alerts against current metrics: **usage thresholds against Redis counters (`usage:{org_id}...`) and the ClickHouse-fed `customer.usage_summary` rollup — never a Postgres `usage_events` table (ADR-001 §2)**; billing from `billing.invoices`; customer/churn from `customer.customers` + `analytics.churn_risk_scores`; wallet from Redis `wallet:{customer_id}` vs `billing.wallets.low_balance_threshold` (CR-2).
 14. When an alert condition is met, the system creates a row in `developer.alert_history` for each mapped channel with `delivery_status = pending`, then dispatches notifications.
 15. `developer.alert_history` records: `alert_id`, `channel_id`, `customer_id` (if alert is customer-scoped), `triggered_at`, `delivery_status`, `value_snapshot` (JSON of metric values at trigger time).
-16. `billing.notification_delivery_log` records each individual delivery attempt: channel, recipient, status, error code/message, timestamps.
+16. `communication.notification_delivery_log` records each individual delivery attempt: channel, recipient, status, error code/message, timestamps.
 17. `GET /api/v1/alerts/:alertId/history` returns alert trigger history with delivery status per channel; filterable by `date_from`, `date_to`, `status`.
 18. `POST /api/v1/alerts/:alertId/test` triggers a test notification to all mapped channels (does not create a `developer.alert_history` row with `delivery_status` — only logged for test).
 19. `GET /api/v1/alerts/:alertId` returns the alert with its mapped channels.
@@ -121,7 +125,7 @@ Key capabilities:
 
 **Then:**
 - `developer.alert_history` row created with `alert_id = alert_001`, `channel_id = channel_001`, `customer_id = cust_abc`, `delivery_status = success`
-- `billing.notification_delivery_log` row created for Slack delivery
+- `communication.notification_delivery_log` row created for Slack delivery
 - `developer.alerts.trigger_count` incremented, `last_triggered_at` updated
 - Notification dispatched to Slack channel with alert details
 
@@ -148,7 +152,7 @@ Key capabilities:
 
 **Then:**
 - Test notification dispatched to channel
-- `billing.notification_delivery_log` row created with `status = success` and `entity_type = alert_test`
+- `communication.notification_delivery_log` row created with `status = success` and `entity_type = alert_test`
 - 200 returned with `{ test_sent: true, channel_id }`
 
 ---
@@ -172,7 +176,7 @@ Key capabilities:
 **When:** `POST /api/v1/alerts` with `{ "name": "Test", "alert_type": "invalid_type", ... }`
 
 **Then:**
-- 400 `INVALID_ALERT_TYPE` — must be one of: usage, billing, customer, churn, revenue
+- 400 `INVALID_ALERT_TYPE` — must be one of: usage, billing, customer, churn, revenue, wallet_low_balance, auto_topup_failure
 
 ---
 
@@ -180,10 +184,10 @@ Key capabilities:
 
 **Given:** ORG_ADMIN for org `acme`
 
-**When:** `POST /api/v1/alert-channels` with `{ "name": "Test", "channel_type": "sms" }`
+**When:** `POST /api/v1/alert-channels` with `{ "name": "Test", "channel_type": "discord" }`
 
 **Then:**
-- 400 `INVALID_CHANNEL_TYPE` — must be one of: email, slack, webhook, pagerduty
+- 400 `INVALID_CHANNEL_TYPE` — must be one of: email, slack, webhook, pagerduty, sms
 
 ---
 
@@ -206,7 +210,7 @@ Key capabilities:
 
 **Then:**
 - `developer.alert_history` row created with `delivery_status = failed`
-- `billing.notification_delivery_log` row created with `status = failed`, `error_code`, `error_message`
+- `communication.notification_delivery_log` row created with `status = failed`, `error_code`, `error_message`
 - `developer.alerts` row NOT updated (`trigger_count`, `last_triggered_at` unchanged since delivery failed)
 - Retry scheduled per channel's retry policy
 
@@ -271,9 +275,10 @@ Key capabilities:
 | `notification_delivery_log` | `communication` | INSERT · SELECT | `id, org_id, customer_id, channel, recipient, status, error_code, error_message, sent_at` |
 | `notification_templates` | `communication` | SELECT | `id, org_id, template_code, channel, template_body` |
 | `customers` | `customer` | SELECT | `id, org_id, name, email, health_score, churn_risk` |
-| `usage_summary` | `customer` | SELECT | `customer_id, meter_id, total_usage, total_cost, period_start, period_end` |
-| `invoices` | `billing` | SELECT | `id, customer_id, status, amount, overdue_since` |
-| `customer_health_scores` | `intelligence` | SELECT | `customer_id, health_score, score_date` |
+| `usage_summary` | `customer` | SELECT | `customer_id, meter_id, total_usage, total_cost, period_start, period_end` — ClickHouse-fed display/eval rollup (ADR-001 §2); no Postgres `usage_events` table exists |
+| `invoices` | `billing` | SELECT | `id, customer_id, status, total, overdue_since` |
+| `wallets` | `billing` | SELECT | `id, customer_id, balance, low_balance_threshold, auto_topup_enabled, status` — CR-2 wallet alert types |
+| `churn_risk_scores` | `analytics` | SELECT | `customer_id, score, risk_band, computed_at` |
 | `identity_organizations` | `identity` | SELECT | `id, name` |
 
 ---
@@ -336,8 +341,8 @@ PENDING
 |---|---|---|
 | `ALERT_NOT_FOUND` | 404 | `alertId` does not exist in `developer.alerts` |
 | `CHANNEL_NOT_FOUND` | 404 | `channelId` does not exist in `developer.alert_channels` |
-| `INVALID_ALERT_TYPE` | 400 | `alert_type` not in `{ usage, billing, customer, churn, revenue }` (DB enum: `usage_threshold | budget_threshold | error_rate | latency | custom | billing | customer | churn | revenue`) |
-| `INVALID_CHANNEL_TYPE` | 400 | `channel_type` not in `{ email, slack, webhook, pagerduty }` |
+| `INVALID_ALERT_TYPE` | 400 | `alert_type` not in `{ usage, billing, customer, churn, revenue, wallet_low_balance, auto_topup_failure }` (ERD §6 set + CR-2) |
+| `INVALID_CHANNEL_TYPE` | 400 | `channel_type` not in `{ email, slack, webhook, pagerduty, sms }` (ERD §6) |
 | `ALERT_IS_ACTIVE` | 409 | Attempt to delete an alert with `status = active` |
 | `ORG_MISMATCH` | 403 | Alert or channel belongs to a different org |
 | `CHANNEL_ALREADY_MAPPED` | 409 | Alert-channel mapping already exists |
@@ -385,7 +390,7 @@ Accessible from Platform › Alerts. Displays a table of alerts with columns: Na
 
 Create Alert button opens modal:
 - Name (text)
-- Type (dropdown: Usage, Billing, Customer, Churn, Revenue)
+- Type (dropdown: Usage, Billing, Customer, Churn, Revenue, Wallet Low Balance, Auto Top-up Failure)
 - Condition Expression (text area with syntax help, e.g. `usage['api_calls'] > 100000`)
 - Threshold (numeric, optional depending on condition)
 - Status (Active/Disabled toggle)
@@ -396,13 +401,14 @@ Shows alert configuration + mapped channels list + recent trigger history timeli
 
 ### Alert Channels Page (ORG_ADMIN / DEVELOPER)
 
-Accessible from Platform › Alert Channels. Displays a table with columns: Name, Type, Status, Config (sanitized), Created At. Row actions: Edit, Delete. Create Channel button opens modal with Type selector (Email/Slack/Webhook/PagerDuty), Name, and type-specific config fields.
+Accessible from Platform › Alert Channels. Displays a table with columns: Name, Type, Status, Config (sanitized), Created At. Row actions: Edit, Delete. Create Channel button opens modal with Type selector (Email/Slack/Webhook/PagerDuty/SMS), Name, and type-specific config fields.
 
 Channel type config:
 - **Email**: Recipients (multi-email input with add/remove)
 - **Slack**: Webhook URL, Optional Channel override
 - **Webhook**: URL, HTTP Method (POST/PUT), Custom Headers (key-value pairs)
 - **PagerDuty**: Routing Key, Severity (Critical/High/Low)
+- **SMS**: Phone Numbers (multi-input with add/remove; provider per ADR-001 §7, e.g. Twilio)
 
 ### Alert Mapping UI
 
@@ -416,7 +422,8 @@ Customers see their own billing alerts in Settings › Notifications. Shows only
 
 ## Dependencies & Notes for Agent
 
-- **Alert evaluation job**: Cron job (`ALERT_EVALUATION_CRON`) runs every N minutes. For each `active` alert, evaluate `condition_expr` against current data. Use a sandboxed expression evaluator (e.g. `jexl` or `expr-lang`) to prevent injection. Metrics sourced from `customer.usage_summary` (for usage), `billing.invoices` (for billing), `customer.customers` + `intelligence.customer_health_scores` (for customer/churn/revenue).
+- **Alert evaluation job**: Cron job (`ALERT_EVALUATION_CRON`) runs every N minutes. For each `active` alert, evaluate `condition_expr` against current data. Use a sandboxed expression evaluator (e.g. `jexl` or `expr-lang`) to prevent injection. Metrics sourced from Redis counters (`usage:{org_id}[:{customer_id}]`) and the ClickHouse-fed `customer.usage_summary` rollup for usage — **never a Postgres `usage_events` table (deleted per ADR-001 §2)**; `billing.invoices` (for billing); `customer.customers` + `analytics.churn_risk_scores` (for customer/churn/revenue); Redis `wallet:{customer_id}` + `billing.wallets` (for wallet types, CR-2).
+- **Wallet alert types (CR-2)**: `wallet_low_balance` fires when the wallet balance crosses `billing.wallets.low_balance_threshold` (balance from the Redis enforcement cache, reconciled against the Postgres credit ledger); `auto_topup_failure` fires when the billing worker reports a failed auto top-up PaymentIntent — the failure also feeds dunning.
 - **Condition expression syntax** (example):
   - Usage: `usage['api_calls'] > threshold` — looks up meter by name from `catalog.meters`
   - Billing: `invoice.status == 'overdue' && invoice.age_days > 30`
@@ -430,19 +437,19 @@ Customers see their own billing alerts in Settings › Notifications. Shows only
   - Slack: POST to `webhook_url` with formatted Slack message block.
   - Webhook: POST/PUT to configured URL with JSON payload: `{alert_id, alert_name, alert_type, triggered_at, customer_id, metric_snapshot}`.
   - PagerDuty: POST to PagerDuty Events API v2 with `routing_key` and formatted payload.
-- **Delivery logging**: Every dispatch attempt creates a row in `billing.notification_delivery_log`. On success, update `developer.alert_history.delivery_status = success`. On failure, update to `failed` and schedule retry.
+- **Delivery logging**: Every dispatch attempt creates a row in `communication.notification_delivery_log` (C-9). On success, update `developer.alert_history.delivery_status = success`. On failure, update to `failed` and schedule retry.
 - **Retry logic**: If delivery fails, enqueue a retry job with exponential backoff (delay = `ALERT_RETRY_DELAY_SEC * 2^attempt`). After `ALERT_MAX_RETRIES` attempts, mark as `failed` and stop retrying.
-- **Prisma enums**:
-  - `developer_alert_type { USAGE BILLING CUSTOMER CHURN REVENUE }` (DB enum values added via migration: `usage_threshold | budget_threshold | error_rate | latency | custom | billing | customer | churn | revenue`)
-  - `developer_channel_type { EMAIL SLACK WEBHOOK PAGERDUTY }` (DB enum: `email | sms | slack | webhook | pagerduty | discord | custom`)
-  - `developer_delivery_status { PENDING SENT DELIVERED FAILED }` (DB enum: `pending | sent | delivered | failed`; `success` in story maps to `delivered`, `retrying` is tracked via `retry_count` column)
-  - `developer_integration_status { connected available error }`
+- **Prisma enums** (per ERD §6; drifted DB enum lists removed):
+  - `developer_alert_type { USAGE BILLING CUSTOMER CHURN REVENUE WALLET_LOW_BALANCE AUTO_TOPUP_FAILURE }` (ERD §6 set + the two CR-2 wallet types)
+  - `developer_channel_type { EMAIL SLACK WEBHOOK PAGERDUTY SMS }` (ERD §6)
+  - `developer_delivery_status { PENDING SENT DELIVERED FAILED }` (ERD §6; `success` in story maps to `DELIVERED`, `retrying` is tracked via `retry_count` column)
+  - `developer_integration_status { connected available error }` (ERD §6)
 - **RBAC guards**:
   - `OrgAdminGuard`: allows `ORG_ADMIN` and `SUPER_ADMIN`
   - `DeveloperGuard`: allows `DEVELOPER` role; enforces `created_by` ownership for edit/delete
   - `CustomerOwnerGuard`: allows `CUSTOMER` read access to their own alert history only
   - `END_USER`: always denied at guard level
-- **Audit logging**: Alert create/update/delete and channel create/update/delete must be recorded in `compliance.audit_logs`. Alert triggers themselves are logged via `developer.alert_history`.
+- **Audit logging**: Alert create/update/delete and channel create/update/delete must be recorded in `platform.audit_logs` (C-7). Alert triggers themselves are logged via `developer.alert_history`.
 - **Test notifications**: `POST /alerts/:alertId/test` sends a real notification but does NOT create a `developer.alert_history` row with delivery status (only logged to `notification_delivery_log` with `entity_type = alert_test`). The alert's `trigger_count` and `last_triggered_at` are NOT updated by test invocations.
 - **Idempotency**: Alert evaluation job must be idempotent — running it twice with the same conditions should not double-send notifications. Uses `alert_id + triggered_at` deduplication via the history table.
 - **Expression validation**: `condition_expr` is validated on alert create/update using a allowlist of allowed functions and operators. No `eval()`, no shell commands, no file access.

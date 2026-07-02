@@ -1,5 +1,7 @@
 # QuantumBilling User Story: Contract
 
+> Aligned with ADR-001 (2026-07-01).
+
 **QB-STORY-007** &nbsp;·&nbsp; Sprint 2 &nbsp;·&nbsp; Phase: Feature
 
 # Contract — manage billing contracts between an org and a customer
@@ -19,12 +21,14 @@ The flow is: create contract (DRAFT) → activate (signed/deployed) → invoices
 **Key capabilities:**
 - ORG_ADMIN creates a contract linked to a customer, with an optional `rate_card`, name, `commit_amount` (minimum spend commitment), and `auto_renew` flag
 - Contract status: `DRAFT | ACTIVE | EXPIRED | TERMINATED`
-- `commit_amount`: if actual usage < commit_amount, the difference may be charged as a minimum commitment fee (depending on billing model)
+- `commit_amount`: at period close the Go billing worker computes `max(0, commit_amount − period spend)` and bills any shortfall as a `COMMIT_TRUE_UP` invoice line item (ADR-001 §3)
 - Contract can be linked to a `catalog.rate_card` (defines meter rates) or have contract-specific `billing.contract_rates`
+- **`billing.contract_rates` are step 1 of the ADR-001 §3.3 rating waterfall**: contract_rates → the contract's pinned `rate_card_version` entry → the plan charge's pricing model → unrated (flagged on a rating-exceptions report)
+- A contract governs many subscriptions: `customer.subscriptions.contract_id` points at the contract (ERD.md conflict C-13); contracts carry no `subscription_id` back-reference
 - `auto_renew`: if true, subscription renews automatically at end of term
 - SUPER_ADMIN can manage contracts for any org
 - Contract's `billing.discounts` can be applied: percentage off, fixed credit, etc.
-- Billing engine uses contract rates to calculate invoice line items
+- The Go billing worker resolves contract rates through the waterfall to calculate invoice line items
 
 ---
 
@@ -44,9 +48,9 @@ The flow is: create contract (DRAFT) → activate (signed/deployed) → invoices
 1. ORG_ADMIN can create a contract with `customer_id`, `name`, `rate_card_id` (optional), `commit_amount` (decimal, >= 0), and `auto_renew` (boolean). Initial status is `DRAFT`.
 2. Contract transitions: `DRAFT → ACTIVE` (via explicit activate action), `ACTIVE → EXPIRED` (end date reached), `ACTIVE → TERMINATED` (early termination), `EXPIRED → ACTIVE` (renew).
 3. A contract's `rate_card_id` links to `catalog.rate_cards.id`. If null, contract-specific rates must be added via `POST /contracts/:id/rates`.
-4. `commit_amount` is stored as a decimal. Billing engine compares actual usage against commit_amount at invoice time.
+4. `commit_amount` is stored as a decimal. At invoice time the Go billing worker compares actual period spend against `commit_amount` and emits a `COMMIT_TRUE_UP` line item for `max(0, commit_amount − period spend)` (ADR-001 §3).
 5. `auto_renew` flag: when true, the billing engine auto-renews the associated subscription(s) at `end_date`.
-6. Contract-specific billing rates (`billing.contract_rates`) can be added per meter via `POST /contracts/:contractId/rates`. These override `catalog.rate_card_rates`.
+6. Contract-specific billing rates (`billing.contract_rates`) can be added per meter via `POST /contracts/:contractId/rates`. These are step 1 of the ADR-001 §3.3 rating waterfall — they override the contract's pinned rate-card version entry (step 2) and the plan charge's pricing model (step 3); anything unmatched is flagged unrated (step 4), never billed at an implicit zero.
 7. Discounts can be applied to a contract via `POST /contracts/:contractId/discounts`. Multiple discounts can exist; priority field determines application order.
 8. `DELETE /contracts/:contractId` performs a soft delete — status set to `TERMINATED`, not removed from DB.
 9. SUPER_ADMIN can access all contracts across all orgs. ORG_ADMIN sees only own org. CUSTOMER sees only own contract.
@@ -149,13 +153,13 @@ The flow is: create contract (DRAFT) → activate (signed/deployed) → invoices
 |-------|-----------|-------------|
 | `customer.contracts` | INSERT · SELECT · UPDATE | `id, customer_id, rate_card_id, name, commit_amount, auto_renew, status, start_date, end_date, created_at, updated_at` |
 | `customer.customers` | SELECT | `id, org_id, name, status` |
-| `customer.subscriptions` | SELECT | `id, org_id, customer_id, contract_id, product_id, start_date, end_date, status` |
+| `customer.subscriptions` | SELECT | `id, org_id, customer_id, plan_id, contract_id (nullable — subscription carries the FK per ERD.md C-13), start_date, end_date, status` |
 | `catalog.rate_cards` | SELECT | `id, org_id, name, effective_date, status` |
 | `catalog.rate_card_rates` | SELECT | `id, rate_card_id, meter_id, model_name, rate, unit_label` |
 | `catalog.rate_card_versions` | INSERT · SELECT | `id, rate_card_id, org_id, version, change_type, snapshot_data, change_summary` |
 | `billing.contract_rates` | INSERT · SELECT · UPDATE | `id, contract_id, meter_id, model_name, effective_date, expires_date, rate, unit_label` |
 | `billing.discounts` | INSERT · SELECT | `id, org_id, contract_id, discount_type, discount_value, priority, effective_date, expires_date` |
-| `billing.invoices` | SELECT | `id, customer_id, contract_id, invoice_number, amount, credits_applied, currency, status` |
+| `billing.invoices` | SELECT | `id, customer_id, subscription_id, invoice_number, total, credits_applied, currency, status` — reached via the contract's subscriptions (ERD.md §4) |
 | `audit_logs` | INSERT | `id, actor_id, action, target_id, org_id, metadata, created_at` |
 
 ---
@@ -238,8 +242,8 @@ On save: `POST /api/v1/contracts`. On success: redirect to contract detail page.
 - **Details tab:** All contract fields, status badge, "Activate" button (if DRAFT), "Terminate" button (if ACTIVE), "Renew" button (if EXPIRED).
 - **Rates tab:** Table of `billing.contract_rates` linked to this contract. "Add Rate" button opens form: Meter (select), Model Name, Rate, Unit Label, Effective Date, Expires Date.
 - **Discounts tab:** Table of `billing.discounts`. "Add Discount" button: Discount Type (PERCENTAGE / FIXED_CREDIT / VOLUME), Discount Value, Priority, Effective Date, Expires Date.
-- **Subscriptions tab:** Table of `customer.subscriptions` where `contract_id = this contract`.
-- **Invoices tab:** Table of `billing.invoices` where `contract_id = this contract`.
+- **Subscriptions tab:** Table of `customer.subscriptions` where `contract_id = this contract` (the subscription carries the FK — ERD.md C-13).
+- **Invoices tab:** Table of `billing.invoices` whose `subscription_id` belongs to a subscription governed by this contract.
 - **Audit Log tab:** Read-only timeline of all lifecycle events.
 
 ### Contract status badge colors
@@ -256,8 +260,8 @@ On save: `POST /api/v1/contracts`. On success: redirect to contract detail page.
 - **State machine transitions** are enforced in the service layer — guard methods `canActivate()`, `canTerminate()`, `canRenew()` check current status before allowing transitions.
 - **Billing engine integration:** on `DRAFT → ACTIVE`, emit a `ContractActivated` event to the billing engine so it begins generating invoice candidates. On `ACTIVE → TERMINATED/EXPIRED`, emit `ContractDeactivated`.
 - **Auto-renewal** is handled by the billing engine's scheduled job — it reads `auto_renew = true` contracts whose `end_date` is approaching and calls the renew endpoint.
-- **Minimum commitment fee** logic (if `actual_usage < commit_amount`): billing engine applies a line item of type `MINIMUM_COMMITMENT_FEE` to the invoice. Implement as a post-calculation step after normal usage line items.
+- **Commit true-up** logic: the Go billing worker computes `max(0, commit_amount − period spend)` (Postgres contract × ClickHouse spend) and applies a line item of type `COMMIT_TRUE_UP` to the invoice (ADR-001 §3). Applied as a post-calculation step after normal usage line items.
 - **Discount priority:** when multiple discounts apply, sort by `priority` ASC (lower number = applied first). Discount types: `PERCENTAGE` (percentage off subtotal), `FIXED_CREDIT` (flat credit), `VOLUME` (tiered based on usage).
-- **Prisma models:** `Contract` (enum `ContractStatus { DRAFT ACTIVE EXPIRED TERMINATED }`), `ContractRate`, `Discount` (enum `DiscountType { PERCENTAGE FIXED_CREDIT VOLUME }`), linked via FKs as defined in ERD.
-- **Subscriptions linking:** `customer.subscriptions.contract_id` is nullable — a subscription may exist without a contract (one-off billing). When a contract is terminated, existing subscriptions remain but `contract_id` is not cleared (historical record).
+- **Prisma models:** `Contract` (enum `ContractStatus { DRAFT ACTIVE EXPIRED TERMINATED }`), `ContractRate`, `Discount` (enum `DiscountType { PERCENTAGE FIXED_CREDIT VOLUME }`), linked via FKs as defined in ERD.md §§2–4.
+- **Subscriptions linking (ERD.md C-13):** the FK direction is subscription → contract — `customer.subscriptions.contract_id` (nullable) points at the contract; a contract governs many subscriptions and carries no `subscription_id` back-reference. A subscription may exist without a contract (one-off billing). When a contract is terminated, existing subscriptions remain but `contract_id` is not cleared (historical record).
 - **Audit logging:** write to `audit_logs` on every status transition with `action = CONTRACT_STATUS_CHANGED`, `target_id = contract_id`, `metadata = { old_status, new_status, actor_id, org_id }`.

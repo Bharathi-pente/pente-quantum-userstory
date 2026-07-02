@@ -1,5 +1,7 @@
 # Story 1 — Define All Go Domain Types & Validation
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 0 — Core Event Ingestion Pipeline
 > **Depends on:** Nothing (foundation)
 > **Blocks:** Stories 2, 3, 4, 5
@@ -23,8 +25,8 @@ This story produces a single Go package (e.g. `internal/models`) containing ever
 | 1 | Struct `UsageEvent` defined with all fields below. Every field has a JSON tag. |
 | 2 | `EventID string \`json:"event_id"\`` — unique per event, generated if empty |
 | 3 | `OrgID string \`json:"org_id"\`` — the organization that owns this event |
-| 4 | `TenantID string \`json:"tenant_id"\`` — the tenant/customer within the org |
-| 5 | `UserID string \`json:"user_id"\`` — the end-user or service account that triggered the event |
+| 4 | `CustomerID string \`json:"customer_id"\`` — the customer within the org (= `customer.customers.id`) |
+| 5 | `EndUserID string \`json:"end_user_id"\`` — the end user (= `customer.end_users.id`) or service account that triggered the event |
 | 6 | `SessionID string \`json:"session_id,omitempty"\`` — groups multiple requests in the same conversation; top-level column for query performance |
 | 7 | `SourceMode string \`json:"source_mode"\`` — one of `direct_ingest`, `virtual_key`, `byok` |
 | 8 | `KeyID string \`json:"key_id"\`` — the API key identifier used to authenticate this request |
@@ -55,7 +57,7 @@ This story produces a single Go package (e.g. `internal/models`) containing ever
 
 | # | Criterion |
 |---|---|
-| 26 | Struct `KeyContext` with: `KeyID string`, `OrgID string`, `TenantID string`, `SourceMode string`, `Status string` |
+| 26 | Struct `KeyContext` with: `KeyID string`, `OrgID string`, `CustomerID string`, `SourceMode string`, `Status string` |
 | 27 | Method `IsActive() bool` — returns `Status == "active"` |
 | 28 | Method `IsProxyMode() bool` — returns `SourceMode == "virtual_key" || SourceMode == "byok"` |
 
@@ -77,10 +79,10 @@ This story produces a single Go package (e.g. `internal/models`) containing ever
 | 35 | `input_tokens` must be ≥ 0 (allow 0 for non-token events like image gen) |
 | 36 | `output_tokens` must be ≥ 0 |
 | 37 | `thinking_tokens` must be ≥ 0 |
-| 38 | `user_id` must be non-empty |
+| 38 | `end_user_id` must be non-empty |
 | 39 | `org_id` must be non-empty when `source_mode` is empty or `direct_ingest` |
 | 40 | `org_id` may be empty when `source_mode` is `virtual_key` or `byok` (it will be overridden from key context) |
-| 41 | `tenant_id` may be empty when `source_mode` is set (will be derived from key context) |
+| 41 | `customer_id` may be empty when `source_mode` is set (will be derived from key context) |
 | 42 | `metadata` values must all be strings (enforced by type system — `map[string]string`) |
 | 43 | All validation errors use a common `ValidationError` type with a `Field` and `Message` |
 
@@ -89,7 +91,7 @@ This story produces a single Go package (e.g. `internal/models`) containing ever
 | # | Criterion |
 |---|---|
 | 44 | `func (e *UsageEvent) ToUsageEvent() *UsageEvent` — normalizes the event: generates `EventID` (UUID v4) if empty, sets `TimestampMs` to current time if zero |
-| 45 | `func (e *UsageEvent) EnrichFromKeyContext(kc KeyContext)` — sets `OrgID`, `TenantID`, `SourceMode`, `KeyID` from the key context; if `kc.IsProxyMode()`, overrides `OrgID` and `TenantID` unconditionally |
+| 45 | `func (e *UsageEvent) EnrichFromKeyContext(kc KeyContext)` — sets `OrgID`, `CustomerID`, `SourceMode`, `KeyID` from the key context; if `kc.IsProxyMode()`, overrides `OrgID` and `CustomerID` unconditionally |
 
 ### Response structs
 
@@ -111,13 +113,13 @@ This story produces a single Go package (e.g. `internal/models`) containing ever
 | TC-04 | `UsageEvent` with negative `input_tokens` | `Validate()` returns error with field `input_tokens` |
 | TC-05 | `UsageEvent` with negative `output_tokens` | `Validate()` returns error with field `output_tokens` |
 | TC-06 | `UsageEvent` with negative `thinking_tokens` | `Validate()` returns error with field `thinking_tokens` |
-| TC-07 | `UsageEvent` with empty `user_id` | `Validate()` returns error with field `user_id` |
+| TC-07 | `UsageEvent` with empty `end_user_id` | `Validate()` returns error with field `end_user_id` |
 | TC-08 | `UsageEvent` with `source_mode=direct_ingest` and empty `org_id` | `Validate()` returns error |
 | TC-09 | `UsageEvent` with `source_mode=virtual_key` and empty `org_id` | `Validate()` passes (will be enriched later) |
 | TC-10 | `ToUsageEvent()` with empty `EventID` | UUID v4 generated, 36 chars with hyphens |
 | TC-11 | `ToUsageEvent()` with `TimestampMs=0` | Set to current time in millis |
-| TC-12 | `EnrichFromKeyContext()` with `virtual_key` mode | `OrgID` and `TenantID` overridden from key context |
-| TC-13 | `EnrichFromKeyContext()` with `direct_ingest` mode | `OrgID` NOT overridden; `TenantID` set if empty |
+| TC-12 | `EnrichFromKeyContext()` with `virtual_key` mode | `OrgID` and `CustomerID` overridden from key context |
+| TC-13 | `EnrichFromKeyContext()` with `direct_ingest` mode | `OrgID` NOT overridden; `CustomerID` set if empty |
 | TC-14 | `KeyContext.IsActive()` with `status=active` | Returns `true` |
 | TC-15 | `KeyContext.IsActive()` with `status=revoked` | Returns `false` |
 | TC-16 | `KeyContext.IsProxyMode()` with `virtual_key` | Returns `true` |

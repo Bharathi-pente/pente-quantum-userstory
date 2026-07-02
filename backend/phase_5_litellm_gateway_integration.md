@@ -1,5 +1,7 @@
 # Phase 5 — LiteLLM Gateway Integration
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Status:** Greenfield Specification | **Scope:** Integrate the LiteLLM AI proxy gateway so that Mode B (Virtual Key) and Mode C (BYOK) usage events flow automatically into the unified pipeline: **LiteLLM → Ingest API → Kafka → ClickHouse**.
 >
 > This is the **Phase 5 blueprint**. Phase 0 built the ingest API. Phase 1 built the analytics worker. Phase 3 built the key management control plane. Phase 5 connects them to LiteLLM — the open-source AI proxy that authenticates end-user API keys, routes LLM requests to upstream providers, and emits usage telemetry back to the Event Engine via a custom callback.
@@ -8,7 +10,7 @@
 
 ## Description
 
-As a **platform operator offering AI proxy services**, I need the LiteLLM gateway integrated with the Event Engine so that every LLM request routed through a virtual key or BYOK key automatically generates a usage event in the ingest pipeline — with correct `org_id`, `tenant_id`, `source_mode`, and `key_id` attribution — without the customer writing any integration code.
+As a **platform operator offering AI proxy services**, I need the LiteLLM gateway integrated with the Event Engine so that every LLM request routed through a virtual key or BYOK key automatically generates a usage event in the ingest pipeline — with correct `org_id`, `customer_id`, `source_mode`, and `key_id` attribution — without the customer writing any integration code.
 
 The integration has four moving parts:
 1. **Key sync**: When the control plane creates a key (Phase 3), it must be propagated to LiteLLM's Prisma database as a `VerificationToken` row.
@@ -54,9 +56,9 @@ End-User Client
 | # | Criterion |
 |---|---|
 | 1 | When a key is created via the control plane (Phase 3 POST /v1/keys), it is synced to LiteLLM's `VerificationToken` table within 2 seconds |
-| 2 | The `VerificationToken.metadata` JSON column contains: `{"source_mode": "...", "org_id": "...", "tenant_id": "...", "key_id": "..."}` |
-| 3 | For virtual keys (Mode B): `source_mode=virtual_key`, `tenant_id` is set from the key's assigned tenant |
-| 4 | For BYOK keys (Mode C): `source_mode=byok`, `tenant_id` is optional (allows payload override), `customer_provider_key` holds the encrypted org-owned AI key |
+| 2 | The `VerificationToken.metadata` JSON column contains: `{"source_mode": "...", "org_id": "...", "customer_id": "...", "key_id": "..."}` |
+| 3 | For virtual keys (Mode B): `source_mode=virtual_key`, `customer_id` is set from the key's assigned customer |
+| 4 | For BYOK keys (Mode C): `source_mode=byok`, `customer_id` is optional (allows payload override), `customer_provider_key` holds the encrypted org-owned AI key |
 | 5 | Redis key context (Phase 0, Story 2) is also populated: `apikey:{key_value}` → JSON `KeyContext` |
 | 6 | Key deletion/revocation in the control plane removes the `VerificationToken` row (or sets `blocked=true`) and deletes the Redis key |
 
@@ -66,7 +68,7 @@ End-User Client
 |---|---|
 | 7 | A custom Python `CustomLogger` callback is loaded into the LiteLLM proxy at startup |
 | 8 | On every successful LLM response (`async_log_success_event`), the callback emits a `POST /v1/events` to the Ingest API |
-| 9 | Event payload includes: `event_id` (UUID v4), `org_id`, `tenant_id`, `user_id` (from request `user` field), `event_type=llm_request`, `model`, `input_tokens`, `output_tokens`, `total_tokens`, `cost`, `status=success`, `metadata` (provider, request_id, cache_hit) |
+| 9 | Event payload includes: `event_id` (UUID v4), `org_id`, `customer_id`, `end_user_id` (from request `user` field), `event_type=llm_request`, `model`, `input_tokens`, `output_tokens`, `total_tokens`, `cost`, `status=success`, `metadata` (provider, request_id, cache_hit) |
 | 10 | Auth header: `X-API-Key: <raw user API key>` — the Ingest API validates this against Redis and enriches the event |
 | 11 | Callback timeout: 5 seconds. On 202: success. On 409 (duplicate): log and skip. On 503 (Kafka down): log warning, event is lost (not retried — LiteLLM doesn't queue). On 4xx: log error |
 | 12 | On failed LLM responses (`async_log_failure_event`): emit event with `status=error`, include error type and message in metadata |
@@ -108,7 +110,7 @@ End-User Client
 ### TC-01: Virtual key → full pipeline
 **Given:** Virtual key `sk_live_vk_test` created and synced to LiteLLM DB + Redis
 **When:** End-user sends LLM request with `sk_live_vk_test`
-**Then:** LiteLLM authenticates, forwards to provider, callback emits to Ingest API → event appears in ClickHouse with `source_mode=virtual_key`, correct `org_id`/`tenant_id`
+**Then:** LiteLLM authenticates, forwards to provider, callback emits to Ingest API → event appears in ClickHouse with `source_mode=virtual_key`, correct `org_id`/`customer_id`
 
 ### TC-02: BYOK key → customer's own provider key used
 **Given:** BYOK key `sk_byok_test` with encrypted `customer_provider_key`
@@ -253,7 +255,7 @@ api_proxy_gateway/
 ## Phase 5 Completion Checklist
 
 - [ ] Key sync daemon creates `VerificationToken` rows in LiteLLM Postgres with metadata
-- [ ] `metadata` JSON matches Phase 0 `KeyContext` fields exactly: `source_mode`, `org_id`, `tenant_id`, `key_id`
+- [ ] `metadata` JSON matches Phase 0 `KeyContext` fields exactly: `source_mode`, `org_id`, `customer_id`, `key_id`
 - [ ] Redis `apikey:{key_value}` populated alongside LiteLLM sync (Story 3 extended)
 - [ ] Callback emits `UsageEvent` payload matching Story 1's struct fields exactly
 - [ ] Callback handles 202, 409, 503, and timeout gracefully

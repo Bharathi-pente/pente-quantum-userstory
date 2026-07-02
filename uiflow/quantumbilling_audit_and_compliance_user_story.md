@@ -1,5 +1,7 @@
 # QuantumBilling User Story: Audit & Compliance — platform-wide activity tracking, compliance reporting, GDPR, and data retention
 
+> Aligned with ADR-001 (2026-07-01).
+
 ---
 
 ## Story ID & Sprint
@@ -27,7 +29,7 @@
 
 ## Description
 
-Based on `compliance.audit_logs`, `compliance.compliance_reports`, `compliance.gdpr_requests`, `compliance.data_retention_policies`, `compliance.discrepancies`, `audit.security_audit_logs`, `platform.audit_logs`, and the `workflow` tables. This module provides the complete audit trail, compliance reporting, GDPR data subject request handling, and data retention enforcement that QuantumBilling requires to operate as a regulated billing platform.
+Based on `platform.audit_logs`, `audit.security_audit_logs`, `compliance.compliance_reports`, `compliance.gdpr_requests`, `compliance.data_retention_policies`, `compliance.discrepancies`, and the `workflow` tables. Audit logging is consolidated per conflict C-7: exactly two audit tables — `platform.audit_logs` (actor actions) and `audit.security_audit_logs` (security violations); `compliance.*` holds GDPR/framework artifacts only, not a third general log. This module provides the complete audit trail, compliance reporting, GDPR data subject request handling, and data retention enforcement that QuantumBilling requires to operate as a regulated billing platform.
 
 > **As an ORG_ADMIN**, I want a comprehensive, tamper-evident audit trail of all actions taken in the platform, the ability to run compliance reports against frameworks (SOC 2, ISO 27001, GDPR), manage GDPR data subject requests, configure data retention policies, and track financial discrepancies, so that QuantumBilling meets enterprise governance requirements and my organization can pass external audits.
 
@@ -37,7 +39,7 @@ Based on `compliance.audit_logs`, `compliance.compliance_reports`, `compliance.g
 
 ## Subdomains
 
-1. [Audit Trail](#subdomain-1--audit-trail) — immutable activity log across platform, compliance, and security event categories
+1. [Audit Trail](#subdomain-1--audit-trail) — immutable activity log: actor actions (`platform.audit_logs`) and security violations (`audit.security_audit_logs`) per C-7
 2. [Compliance Reports](#subdomain-2--compliance-reports) — scheduled and on-demand compliance framework reports
 3. [GDPR & Data Privacy](#subdomain-3--gdpr--data-privacy) — data export, data deletion, and consent management requests
 4. [Data Retention](#subdomain-4--data-retention) — configurable retention policies with automated purge scheduling
@@ -61,24 +63,22 @@ Based on `compliance.audit_logs`, `compliance.compliance_reports`, `compliance.g
 
 ### Description
 
-Three audit log tables capture the complete activity surface of the platform, each at a different scope:
+**Exactly two** audit log tables capture the complete activity surface of the platform (consolidation per conflict C-7 — the former `compliance.audit_logs`, `shared.audit_logs`, `customer.audit_logs`, bare `audit_logs`, and `developer.api_key_audit_logs` are all absorbed):
 
-- **`platform.audit_logs`** — cross-cutting log of all resource mutations: who did what to which entity, from which IP, with before/after values
-- **`compliance.audit_logs`** — compliance-scoped version with `actor`, `actor_name`, `resource_label`, `status` — used for external audit evidence
-- **`audit.security_audit_logs`** — security-relevant events: API key misuse, authentication failures, RBAC violations, suspicious activity
-- **`developer.api_key_audit_logs`** — per-API-key action history: created, used, rotated, revoked
+- **`platform.audit_logs`** — the canonical actor-action log of all resource mutations: who did what to which entity (`resource_type`/`resource_id`), from which IP, with before/after values. External audit evidence and per-API-key action history (create/rotate/revoke, `resource_type = 'api_key'`) are views over this table, not separate tables.
+- **`audit.security_audit_logs`** — security violations only: `violation_type` ∈ `invalid_key | budget_exhausted | rate_limit | guardrail_blocked` plus authentication failures and RBAC denials.
 
-Every service in QuantumBilling writes to the appropriate log(s) via a shared `AuditService`. Logs are append-only (no UPDATE/DELETE in application code). All three tables share a common index strategy: `org_id + created_at` is the primary query path.
+Every service in QuantumBilling writes to the appropriate log via a shared `AuditService`. Logs are append-only (no UPDATE/DELETE in application code). Both tables share a common index strategy: `org_id + created_at` is the primary query path.
 
 ### Acceptance Criteria
 
-1. Every create, update, soft-delete, and status-transition operation in QuantumBilling writes an audit log entry with: `org_id`, `user_id` / `actor_id`, `action` (e.g., `invoice.issued`, `payment.reconciled`), `resource_type`, `resource_id`, `old_value` (JSON), `new_value` (JSON), `ip_address`, `user_agent`, `status` (`SUCCESS | FAILURE`), `created_at`.
+1. Every create, update, soft-delete, and status-transition operation in QuantumBilling writes a `platform.audit_logs` entry with: `org_id`, `user_id`, `action` (e.g., `invoice.issued`, `payment.reconciled`), `resource_type`, `resource_id`, `old_value` (JSON), `new_value` (JSON), `ip_address`, `user_agent`, `status` (`SUCCESS | FAILURE`), `created_at`.
 2. Audit logs cannot be modified or deleted via application APIs — any such attempt returns 405.
 3. SUPER_ADMIN can query audit logs for any org via `GET /api/v1/orgs/:orgId/audit-logs`.
 4. ORG_ADMIN can query audit logs for their own org via `GET /api/v1/audit-logs`.
 5. Audit logs support pagination (`page`, `limit`) and filtering by `resource_type`, `resource_id`, `action`, `actor`, `user_id`, `ip_address`, `status`, and date range (`from`, `to`).
 6. `audit.security_audit_logs` are written automatically by the security layer — every failed authentication, RBAC denial, API key misuse, or suspicious pattern is logged with `violation_type`.
-7. `developer.api_key_audit_logs` records every action taken using a given API key (create, rotate, revoke, access events) with `old_value` and `new_value`.
+7. Every action on a given API key (create, rotate, revoke, access events) is recorded in `platform.audit_logs` with `resource_type = 'api_key'`, `resource_id = <api_key_id>`, `old_value` and `new_value` (C-7 — no separate `developer.api_key_audit_logs` table).
 8. Bulk export of audit logs to JSON Lines format is available via `GET /api/v1/audit-logs/export` with date range and filter parameters.
 9. Audit log entries for sensitive resources (e.g., `payment_methods`, `api_keys`, `users`) include the full before/after snapshot in `old_value`/`new_value`.
 10. Platform-level `platform.audit_logs` are written for all SUPER_ADMIN actions and all cross-org operations.
@@ -122,10 +122,10 @@ List security audit log entries.
 
 #### GET `/api/v1/api-keys/:apiKeyId/audit-logs`
 
-List all audit events for a specific API key.
+List all audit events for a specific API key (a filtered read of `platform.audit_logs` where `resource_type = 'api_key'`).
 
 - **Auth:** JWT · Guard: `OrgAdminGuard`
-- **Response:** 200 `{items: [{id, api_key_id, action, old_value, new_value, performed_by, created_at}], totalCount}`
+- **Response:** 200 `{items: [{id, resource_id, action, old_value, new_value, user_id, created_at}], totalCount}`
 
 ---
 
@@ -196,7 +196,7 @@ Download the full compliance report document.
 6. GDPR request with `status = REJECTED` must include a `rejection_reason` — requests can be rejected if they are frivolous,重复, or outside scope.
 7. ORG_ADMIN receives an email notification when a request is created, when it enters `IN_PROGRESS`, and when it is `COMPLETED`.
 8. `data_size` estimate is computed before processing starts (number of rows × average row size) and updated on completion.
-9. All GDPR operations are themselves logged to `compliance.audit_logs` with `action = "gdpr.request.processed"`.
+9. All GDPR operations are themselves logged to `platform.audit_logs` with `action = "gdpr.request.processed"` (C-7).
 10. GDPR requests for customers with `status = CHURNED` can still be processed; requests for customers already in `DELETED` state return 409.
 
 ### API Endpoints — GDPR
@@ -251,13 +251,13 @@ Download the exported data package for an EXPORT request.
 ### Acceptance Criteria
 
 1. ORG_ADMIN can create a retention policy via `POST /api/v1/data-retention-policies` with `data_type` (e.g., `usage_events`, `audit_logs`, `api_key_usage`, `webhook_deliveries`) and `retention_period` (e.g., `"90 days"`, `"1 year"`, `"7 years"`).
-2. `auto_delete = true` policies are enforced by a nightly background job that purges records older than `NOW() - retention_period`.
+2. `auto_delete = true` policies are enforced by a nightly background job that purges Postgres records older than `NOW() - retention_period`. **Exception — `usage_events`:** raw usage lives only in ClickHouse `events.usage_events` (`PARTITION BY toYYYYMM`, ADR-001 §2 / ERD §7), so usage-data retention is enforced as a ClickHouse **monthly TTL / partition drop** applied by the Go analytics worker's maintenance job — never as Postgres row deletes (no Postgres `usage_events` table exists).
 3. `auto_delete = false` policies are informational — they display the expected purge date in the UI but no automatic action is taken.
 4. ORG_ADMIN can update a policy's `retention_period` or `auto_delete` — the change takes effect on the next purge cycle.
 5. ORG_ADMIN cannot delete a policy that is currently being processed — must wait for the purge job to complete.
 6. `last_purge_at` is updated by the purge job after each successful run.
 7. ORG_ADMIN is notified by email after each purge run with a summary: records purged count, data type, retention period.
-8. Default platform retention periods (if no custom policy is set): `usage_events: 1 year`, `audit_logs: 7 years`, `api_key_usage: 2 years`, `webhook_deliveries: 90 days`.
+8. Default platform retention periods (if no custom policy is set): `usage_events: 1 year` (ClickHouse monthly-partition TTL), `audit_logs: 7 years`, `api_key_usage: 2 years`, `webhook_deliveries: 90 days`.
 
 ### API Endpoints — Data Retention
 
@@ -442,10 +442,8 @@ Cancel an in-flight request (by the original requester).
 
 | Table | Operation | Key columns |
 |-------|-----------|-------------|
-| `platform.audit_logs` | INSERT · SELECT | `id, org_id, user_id, action, resource_type, resource_id, old_value, new_value, ip_address, user_agent, status, created_at` |
-| `compliance.audit_logs` | INSERT · SELECT | `id, org_id, resource_id, action, actor, actor_name, resource_label, details, ip_address, status, user_agent, created_at` |
-| `audit.security_audit_logs` | INSERT · SELECT | `id, org_id, api_key_id, customer_id, violation_type, ip_address, details, triggered_by, created_at` |
-| `developer.api_key_audit_logs` | INSERT · SELECT | `id, api_key_id, org_id, action, old_value, new_value, performed_by, created_at` |
+| `platform.audit_logs` | INSERT · SELECT | `id, org_id, user_id, action, resource_type, resource_id, old_value, new_value, ip_address, user_agent, status, created_at` — canonical actor-action log (C-7); absorbs the former `compliance.audit_logs`, `developer.api_key_audit_logs`, `shared.audit_logs`, `customer.audit_logs` |
+| `audit.security_audit_logs` | INSERT · SELECT | `id, org_id, api_key_id, customer_id, violation_type, ip_address, details, triggered_by, created_at` — security violations only (C-7) |
 | `compliance.compliance_reports` | INSERT · SELECT · UPDATE | `id, org_id, framework, status, report_type, last_audit_date, next_audit_date, findings_count, created_at` |
 | `compliance.gdpr_requests` | INSERT · SELECT · UPDATE | `id, org_id, customer_id, customer_email, request_type, status, data_size, requested_at, completed_at, created_at` |
 | `compliance.data_retention_policies` | INSERT · SELECT · UPDATE · DELETE | `id, org_id, data_type, retention_period, auto_delete, last_purge_at, created_at, updated_at` |
@@ -529,12 +527,12 @@ Accessible from **My Work › Approval Requests** or from the notification badge
 
 ## Dependencies & Notes for Agent
 
-- **Audit log immutability:** The application layer must never issue UPDATE or DELETE against `platform.audit_logs`, `compliance.audit_logs`, or `audit.security_audit_logs`. Enforce this at the Prisma schema level with `@@ignore` on update/delete mutations, or via a DB-level rule.
+- **Audit log immutability:** The application layer must never issue UPDATE or DELETE against `platform.audit_logs` or `audit.security_audit_logs` (the only two audit tables — C-7). Enforce this at the Prisma schema level with `@@ignore` on update/delete mutations, or via a DB-level rule.
 - **Before/after values:** When logging mutations, serialize the full entity state before and after the change as JSON. For create events, `old_value = null`; for delete events, `new_value = null`. Use JSON merge patch format where partial updates only include changed fields.
 - **Async compliance report generation:** Use a background job queue (BullMQ/RabbitMQ) for report generation. Store the job ID in `compliance_reports` so the UI can poll `GET /compliance-reports/:reportId` to observe `status` transitions.
-- **GDPR data export assembly:** The export must pull PII from: `customer.customers`, `customer.customer_contacts`, `identity.users` (for the customer user), `billing.payments` (payment method last4 only, not full card data), `billing.invoices`, `usage_events` for the customer. Do not include secrets, passwords, or API key values.
+- **GDPR data export assembly:** The export must pull PII from: `customer.customers`, `customer.customer_contacts`, `identity.users` (for the customer user), `billing.payments` (payment method last4 only, not full card data), `billing.invoices`; the customer's usage history is fetched via the Go phase-4 analytics APIs from ClickHouse `events.usage_events_dedup_v` (no Postgres `usage_events` table — ADR-001 §2). Do not include secrets, passwords, or API key values.
 - **GDPR anonymization:** When completing a DELETE request, overwrite PII fields with `[REDACTED]` or generated anonymized values. Retain the record structure for financial audit compliance. Set `deleted_at` on the customer record.
-- **Purge job safety:** The data retention purge job must run inside a transaction per data type. It must log the count of records purged and update `last_purge_at` atomically. Use batch deletes (LIMIT 1000) to avoid lock contention on large tables. Skip tables that are under legal hold.
+- **Purge job safety:** The Postgres data retention purge job must run inside a transaction per data type. It must log the count of records purged and update `last_purge_at` atomically. Use batch deletes (LIMIT 1000) to avoid lock contention on large tables. Skip tables that are under legal hold. **Usage data is out of scope for this job:** `usage_events` retention is a ClickHouse concern — monthly TTL / `DROP PARTITION` on `events.usage_events` (partitioned `toYYYYMM`), executed by the Go analytics worker; the control plane only records the policy and surfaces `last_purge_at`.
 - **Approval workflow as gate:** The approval workflow wraps an existing operation — it does not replace it. For example, when a credit note issuance requires approval, the credit note is created with `status = PENDING_APPROVAL` and only transitioned to `ISSUED` after the workflow is APPROVED.
 - **Prisma enums:** `audit_log_status { SUCCESS FAILURE }`; `gdpr_request_status { PENDING IN_PROGRESS COMPLETED PARTIAL REJECTED }`; `discrepancy_status { OPEN INVESTIGATING RESOLVED WRITTEN_OFF }`; `approval_workflow_status { ACTIVE INACTIVE }`; `approval_step_status { PENDING APPROVED REJECTED SKIPPED }`; `approval_request_status { PENDING APPROVED REJECTED CANCELLED }`.
 - **Audit log correlation:** All three audit log tables share `org_id + created_at` as the primary query pattern. Composite indexes must cover: `(org_id, created_at)`, `(org_id, resource_type, created_at)`, `(org_id, user_id, created_at)`.

@@ -1,5 +1,7 @@
 # QuantumBilling User Story: Tax and Currency
 
+> Aligned with ADR-001 (2026-07-01).
+
 ## QB-STORY-009 — Sprint 2 — Phase: Feature
 
 ---
@@ -19,12 +21,14 @@
 **As a ORG_ADMIN, I want to configure tax regions with rates, manage customer tax exemptions, and handle multi-currency billing so that invoices are calculated correctly according to each customer's location and the organization can support global billing.**
 
 Key capabilities:
-- **Tax Regions** (`billing.tax_regions`): per-org tax configurations with country/state, rate, and tax type (from `tax_type` enum: `sales` | `vat` | `gst` | `usst` | `customs` | `hst` (HST — Canadian harmonized sales tax, added via migration). Story uses `sales_tax` as API value which maps to DB `sales`.
+- **Pluggable tax provider is PRIMARY (CR-7):** a tax provider interface (Avalara | Anrok | Stripe Tax) is invoked by the Go billing worker at **invoice finalization**, with jurisdiction resolved from the customer's billing address. The internal `billing.tax_regions` table is the **fallback**, used only when no external provider is configured (`TAX_CALCULATION_PROVIDER = internal`).
+- **Tax Regions** (`billing.tax_regions`): per-org fallback tax configurations with country/state, rate, and tax type. Canonical `tax_type` enum: `SALES | VAT | GST | HST | UST | CUSTOM` (API values; DB values `sales | vat | gst | hst | ust | custom` — mapping fixed per C-4 note).
+- **Customer tax IDs**: VAT/GST registration numbers stored on the customer record and passed to the tax provider; a valid cross-border EU VAT ID produces a **reverse-charge** invoice (tax amount 0, annotated "VAT reverse-charged — Article 196, Directive 2006/112/EC").
 - **Tax Exemptions** (`billing.tax_exemptions`): customer-specific exemptions with certificate IDs and expiration dates
-- **Tax Calculation Audit** (`billing.tax_calculation_audit`): per-invoice, per-line-item tax breakdown with provider reference
+- **Tax Calculation Audit** (`billing.tax_calculation_audit`): per-invoice, per-line-item tax breakdown with `tax_provider` and `provider_ref_id` (CR-7)
 - **Currency Config** (`billing.currency_config`): per-org base currency, supported currencies, and exchange rates
 - **Multi-currency invoices**: invoices can be issued in any supported currency from `billing.currency_config`
-- **Tax calculation during invoice generation**: tax is computed from `billing.tax_regions` based on customer's tax_region_id; result stored in `billing.tax_calculation_audit`
+- **Tax calculation at invoice finalization**: computed by the configured provider (fallback: `billing.tax_regions` via the customer's `tax_region_id`); result stored in `billing.tax_calculation_audit`
 - **Exemption lookup**: if customer has an active exemption in `billing.tax_exemptions`, no tax is applied for that region
 - **SUPER_ADMIN** can manage any org's tax and currency config
 
@@ -52,12 +56,14 @@ Key capabilities:
 7. `billing.currency_config` is created automatically when an org is provisioned with default `base_currency = USD` and `supported_currencies = ["USD"]`.
 8. ORG_ADMIN can update currency config via `PUT /api/v1/currency-config` to change `base_currency`, add/remove from `supported_currencies`, and update `exchange_rates`.
 9. `exchange_rates` in `billing.currency_config` is a JSON map of currency code to rate (e.g. `{"EUR": 0.92, "GBP": 0.79}`); rates are relative to the `base_currency`.
-10. Invoice generation uses the customer's `tax_region_id` from `customer.customers` to look up the applicable tax rate from `billing.tax_regions`; applies `tax_rate` to all line items, stores result in `billing.tax_calculation_audit`.
+10. At invoice finalization (CR-7) the Go billing worker invokes the configured tax provider (Avalara | Anrok | Stripe Tax), resolving jurisdiction from the customer's billing address; only when `TAX_CALCULATION_PROVIDER = internal` does it fall back to the customer's `tax_region_id` → `billing.tax_regions` rate. The result is applied to all line items and stored in `billing.tax_calculation_audit`.
 11. `GET /api/v1/invoices/:invoiceId/tax-breakdown` returns the tax calculation audit from `billing.tax_calculation_audit` for that invoice.
-12. `billing.tax_calculation_audit` records: `tax_region_id`, `taxable_amount`, `tax_rate`, `tax_amount`, `tax_type`, `exemption_id` (if applied), `tax_provider`, `provider_ref_id`, `calculated_at`.
-13. Tax calculation is attempted for every invoice line item; if tax provider (e.g. Avalara, Stripe Tax) is unavailable, the `issue()` call fails with 502 `TAX_PROVIDER_UNAVAILABLE`.
+12. `billing.tax_calculation_audit` records: `tax_region_id` (fallback path), `taxable_amount`, `tax_rate`, `tax_amount`, `tax_type`, `exemption_id` (if applied), `tax_provider` (`avalara | anrok | stripe_tax | internal`), `provider_ref_id`, `calculated_at` (CR-7).
+13. Tax calculation is attempted for every invoice line item; if the external tax provider is unavailable, finalization fails with 502 `TAX_PROVIDER_UNAVAILABLE` and the invoice remains `draft` (unified lowercase status enum, C-4).
 14. `POST /api/v1/tax-exemptions/:exemptionId/verify` validates an exemption certificate against an external provider (if configured); updates `status` accordingly.
-15. SUPER_ADMIN can view and manage any org's tax regions, exemptions, and currency config via platform-wide endpoints.
+15. ORG_ADMIN and CUSTOMER can record customer tax IDs (e.g. EU VAT number, GST number) on the customer record; tax IDs are validated (format + optional VIES lookup) and passed to the tax provider on every calculation.
+16. When the customer presents a valid VAT ID in a cross-border B2B scenario, the invoice is issued with `tax_amount = 0` and a **reverse-charge annotation**; the audit row records the reverse-charge reason.
+17. SUPER_ADMIN can view and manage any org's tax regions, exemptions, and currency config via platform-wide endpoints.
 
 ---
 
@@ -67,7 +73,7 @@ Key capabilities:
 
 **Given:** ORG_ADMIN for org `acme`
 
-**When:** `POST /api/v1/tax-regions` with `{ "country_code": "US", "state_code": "CA", "name": "California Sales Tax", "rate": 0.0725, "tax_type": "sales_tax" }`
+**When:** `POST /api/v1/tax-regions` with `{ "country_code": "US", "state_code": "CA", "name": "California Sales Tax", "rate": 0.0725, "tax_type": "SALES" }`
 
 **Then:**
 - `billing.tax_regions` row created with `org_id = acme`, `status = active`
@@ -87,16 +93,29 @@ Key capabilities:
 
 ---
 
-### TC-03 — Happy path: generate invoice with tax calculation
+### TC-03 — Happy path: finalize invoice with tax calculation (internal fallback path)
 
-**Given:** Org `acme` has tax region for US/CA with rate 0.0725; customer `cust_abc` has `tax_region_id` pointing to it, no active exemption
+**Given:** `TAX_CALCULATION_PROVIDER = internal`; org `acme` has tax region for US/CA with rate 0.0725; customer `cust_abc` has `tax_region_id` pointing to it, no active exemption
 
-**When:** Invoice is issued for customer via `POST /api/v1/invoices/inv_001/issue`
+**When:** Invoice is finalized for the customer via `POST /api/v1/invoices/inv_001/issue`
 
 **Then:**
-- `billing.tax_calculation_audit` row created with `tax_region_id`, `taxable_amount`, `tax_rate 0.0725`, `tax_amount` calculated
+- `billing.tax_calculation_audit` row created with `tax_region_id`, `taxable_amount`, `tax_rate 0.0725`, `tax_amount` calculated, `tax_provider = internal`
 - Invoice `tax_amount` field updated
 - 200 returned with `{ invoice_id, tax_amount, ... }`
+
+---
+
+### TC-03b — Happy path: finalize invoice via external provider (primary path, CR-7)
+
+**Given:** `TAX_CALCULATION_PROVIDER = stripe_tax`; customer `cust_abc` has a US/CA billing address
+
+**When:** Invoice is finalized via `POST /api/v1/invoices/inv_001/issue`
+
+**Then:**
+- Provider is called with line items, billing-address jurisdiction, and customer tax IDs
+- `billing.tax_calculation_audit` row created with `tax_provider = stripe_tax` and `provider_ref_id` set; `tax_region_id` is null (provider path)
+- Invoice `tax_amount` updated from the provider response
 
 ---
 
@@ -129,7 +148,7 @@ Key capabilities:
 
 **Given:** Tax region for US/CA already exists for org `acme`
 
-**When:** `POST /api/v1/tax-regions` with `{ "country_code": "US", "state_code": "CA", "name": "California Sales Tax", "rate": 0.08, "tax_type": "sales_tax" }`
+**When:** `POST /api/v1/tax-regions` with `{ "country_code": "US", "state_code": "CA", "name": "California Sales Tax", "rate": 0.08, "tax_type": "SALES" }`
 
 **Then:**
 - 409 `TAX_REGION_EXISTS` — tax region for this country/state combination already exists
@@ -173,14 +192,27 @@ Key capabilities:
 
 ### TC-10 — Negative: tax provider unavailable
 
-**Given:** External tax provider (Avalara/Stripe Tax) is unreachable
+**Given:** External tax provider (Avalara/Anrok/Stripe Tax) is unreachable
 
-**When:** `POST /api/v1/invoices/inv_001/issue` (which triggers tax calculation)
+**When:** `POST /api/v1/invoices/inv_001/issue` (which triggers tax calculation at finalization)
 
 **Then:**
 - 502 `TAX_PROVIDER_UNAVAILABLE`
-- Invoice remains in `DRAFT` status
+- Invoice remains in `draft` status (C-4)
 - Error includes provider name
+
+---
+
+### TC-13 — Happy path: VAT reverse charge for cross-border B2B
+
+**Given:** Org `acme` is established in DE; customer `cust_fr` has a validated FR VAT ID on record and a French billing address
+
+**When:** Invoice is finalized via `POST /api/v1/invoices/inv_001/issue`
+
+**Then:**
+- `billing.tax_calculation_audit` row created with `tax_amount = 0` and reverse-charge reason recorded
+- Invoice annotated: "VAT reverse-charged — customer to account for VAT" with the customer's VAT ID printed
+- `tax_type = VAT`, `tax_provider` and `provider_ref_id` recorded
 
 ---
 
@@ -222,6 +254,8 @@ Key capabilities:
 | `PUT` | `/api/v1/tax-exemptions/:exemptionId` | Update an exemption | JWT · Guard: `OrgAdminGuard` |
 | `DELETE` | `/api/v1/tax-exemptions/:exemptionId` | Soft-delete an exemption | JWT · Guard: `OrgAdminGuard` |
 | `POST` | `/api/v1/tax-exemptions/:exemptionId/verify` | Verify exemption certificate with external provider | JWT · Guard: `OrgAdminGuard` |
+| `GET` | `/api/v1/customers/:customerId/tax-ids` | List customer tax IDs (VAT/GST registration numbers) | JWT · Guard: `OrgAdminGuard` or `CustomerOwnerGuard` |
+| `PUT` | `/api/v1/customers/:customerId/tax-ids` | Set/update customer tax IDs; triggers format + VIES validation | JWT · Guard: `OrgAdminGuard` or `CustomerOwnerGuard` |
 | `GET` | `/api/v1/currency-config` | Get org's currency configuration | JWT · Guard: `OrgAdminGuard` |
 | `PUT` | `/api/v1/currency-config` | Update org's currency configuration | JWT · Guard: `OrgAdminGuard` |
 | `GET` | `/api/v1/invoices/:invoiceId/tax-breakdown` | Get tax calculation audit for an invoice | JWT · Guard: `OrgAdminGuard` |
@@ -232,12 +266,12 @@ Key capabilities:
 
 | Table | Schema | Operation | Key Columns |
 |---|---|---|---|
-| `tax_regions` | `billing` | INSERT · SELECT · UPDATE · DELETE | `id, org_id, country_code, state_code, name, rate, tax_type, status` |
+| `tax_regions` | `billing` | INSERT · SELECT · UPDATE · DELETE | `id, org_id, country_code, state_code, name, rate, tax_type, status` — internal FALLBACK only (CR-7) |
 | `tax_exemptions` | `billing` | INSERT · SELECT · UPDATE · DELETE | `id, customer_id, org_id, certificate_id, reason, expires_at, status` |
-| `tax_calculation_audit` | `billing` | INSERT · SELECT | `id, invoice_id, org_id, customer_id, tax_region_id, taxable_amount, tax_rate, tax_amount, tax_type, exemption_id, tax_provider, calculated_at` |
+| `tax_calculation_audit` | `billing` | INSERT · SELECT | `id, invoice_id, org_id, customer_id, tax_region_id, taxable_amount, tax_rate, tax_amount, tax_type, exemption_id, tax_provider, provider_ref_id, calculated_at` (CR-7 adds `tax_provider`/`provider_ref_id`) |
 | `currency_config` | `billing` | SELECT · UPDATE | `id, org_id, base_currency, supported_currencies, exchange_rates, last_updated` |
-| `customers` | `customer` | SELECT | `id, org_id, tax_region_id, name, email` |
-| `invoices` | `billing` | SELECT · UPDATE | `id, customer_id, tax_amount, tax_rate, currency, status` |
+| `customers` | `customer` | SELECT · UPDATE (tax IDs) | `id, org_id, tax_region_id, billing_address, tax_ids (jsonb — VAT/GST registration numbers), name, email` |
+| `invoices` | `billing` | SELECT · UPDATE | `id, customer_id, tax_amount, tax_rate, currency, status (draft\|pending\|paid\|overdue\|voided — C-4)` |
 | `invoice_line_items` | `billing` | SELECT | `id, invoice_id, amount, description` |
 | `identity_organizations` | `identity` | SELECT | `id, name` |
 
@@ -311,12 +345,14 @@ Note: Currency config has no explicit state machine — it is always active.
 
 | Key | Description |
 |---|---|
-| `DEFAULT_TAX_REGION` | Fallback tax region when customer has no `tax_region_id` (e.g. `US`) |
-| `TAX_CALCULATION_PROVIDER` | Tax provider name — `stripe_tax`, `avalara`, or `mock` (default: `mock`) |
+| `DEFAULT_TAX_REGION` | Fallback tax region when customer has no `tax_region_id` (e.g. `US`) — internal path only |
+| `TAX_CALCULATION_PROVIDER` | Tax provider name — `avalara`, `anrok`, `stripe_tax`, or `internal` (fallback to `billing.tax_regions`; CR-7 — an external provider is the primary strategy) |
 | `AVALARA_ACCOUNT_ID` | Avalara account ID |
 | `AVALARA_LICENSE_KEY` | Avalara license key |
 | `AVALARA_COMPANY_CODE` | Avalara company code |
+| `ANROK_API_KEY` | Anrok API key |
 | `STRIPE_TAX_API_KEY` | Stripe Tax API key |
+| `VAT_ID_VALIDATION_ENABLED` | Validate EU VAT IDs against VIES for reverse-charge eligibility (default: `true`) |
 | `EXCHANGE_RATE_PROVIDER` | Exchange rate provider name — `openexchangerates`, `frankfurter`, or `mock` (default: `mock`) |
 | `EXCHANGE_RATE_REFRESH_INTERVAL_SEC` | How often to refresh exchange rates (default: 3600) |
 | `SUPPORTED_CURRENCIES` | Default supported currencies when org is provisioned (default: `USD`) |
@@ -333,7 +369,7 @@ Note: Currency config has no explicit state machine — it is always active.
 
 ### Tax Regions Page (ORG_ADMIN)
 
-Accessible from Billing › Tax & Currency › Tax Regions. Displays a table of tax regions with columns: Name, Country, State/Region, Rate, Tax Type, Status. Filters: Country dropdown, Tax Type, Status (Active/Archived). Row actions: Edit (pencil icon), Archive (trash icon). Create button opens modal with fields: Name, Country, State/Province (optional), Tax Type (dropdown: Sales Tax, VAT, HST, GST), Rate (decimal input with % suffix).
+Accessible from Billing › Tax & Currency › Tax Regions. A banner notes these regions are the **internal fallback** — an external tax provider (Avalara/Anrok/Stripe Tax), when configured, is the primary calculation path (CR-7). Displays a table of tax regions with columns: Name, Country, State/Region, Rate, Tax Type, Status. Filters: Country dropdown, Tax Type, Status (Active/Archived). Row actions: Edit (pencil icon), Archive (trash icon). Create button opens modal with fields: Name, Country, State/Province (optional), Tax Type (dropdown: Sales Tax, VAT, GST, HST, UST, Custom), Rate (decimal input with % suffix).
 
 ### Tax Exemptions Page (ORG_ADMIN)
 
@@ -347,24 +383,29 @@ Customers access their own tax exemption via Settings › Billing › Tax Exempt
 
 Accessible from Billing › Tax & Currency › Currency. Shows current base currency, supported currencies list, and exchange rates table (Currency, Rate relative to Base). Edit button allows: Base Currency change (warning: affects new invoices only), Add/Remove supported currencies, Manual exchange rate override (with warning about auto-refresh).
 
+### Customer Tax IDs (within Customer Detail / Portal Settings)
+
+ORG_ADMIN (and CUSTOMER, self-serve) can add/edit tax registration numbers: Type (EU VAT, UK VAT, GST, ABN, etc.), Value, Validation status chip (Validated via VIES / Pending / Invalid). Validated VAT IDs enable reverse-charge invoicing.
+
 ### Tax Breakdown Panel (within Invoice Detail)
 
 Displays per-invoice tax calculation from `billing.tax_calculation_audit`:
-- Tax Region, Tax Type, Taxable Amount, Tax Rate, Tax Amount
+- Tax Provider (Avalara / Anrok / Stripe Tax / Internal fallback), Tax Region (fallback path), Tax Type, Taxable Amount, Tax Rate, Tax Amount
 - If exemption applied: "Exemption Applied: [Certificate ID]" with $0 tax
-- Provider reference ID if from external provider
+- If reverse charge applied: "VAT reverse-charged" banner with the customer's VAT ID
+- Provider reference ID (`provider_ref_id`) if from external provider
 
 ---
 
 ## Dependencies & Notes for Agent
 
-- **Tax calculation flow**: During `issue()`, for each line item in `billing.invoice_line_items`, look up customer's `tax_region_id` from `customer.customers`. Check `billing.tax_exemptions` for an active, non-expired exemption. If exempt, record `tax_amount = 0` in `billing.tax_calculation_audit` with `exemption_id`. If not exempt, call tax provider with line item amount, get tax amount, store in audit. Sum all `tax_amount` values → invoice `tax_amount`.
-- **Tax provider integration**: If `TAX_CALCULATION_PROVIDER = mock`, return a calculated tax based on rate in `billing.tax_regions`. For Avalara, use `avatalaTransactionBuilder` / `createTransaction`. For Stripe Tax, use `stripe.tax.calculations.create`. Store provider name and `provider_ref_id` in `billing.tax_calculation_audit`.
+- **Tax calculation flow (CR-7)**: Tax is calculated by the **Go billing worker at invoice finalization** (`draft` → `pending`), never post-issuance. For each line item in `billing.invoice_line_items`: check `billing.tax_exemptions` for an active, non-expired exemption (if exempt, record `tax_amount = 0` in `billing.tax_calculation_audit` with `exemption_id`); check customer tax IDs for VAT reverse-charge eligibility (if eligible, record `tax_amount = 0` with the reverse-charge reason and annotate the invoice); otherwise call the configured tax provider with the line item amount, the jurisdiction resolved from the customer's billing address, and the customer's tax IDs. Sum all `tax_amount` values → invoice `tax_amount`.
+- **Tax provider interface (pluggable, CR-7)**: `calculate(lines, address, tax_ids) → {tax_amount, tax_rate, tax_type, provider_ref_id}` with implementations for Avalara (`createTransaction`), Anrok, Stripe Tax (`stripe.tax.calculations.create`), and `internal` — the fallback that reads the rate from `billing.tax_regions` via the customer's `tax_region_id`. Store `tax_provider` and `provider_ref_id` in `billing.tax_calculation_audit` on every calculation.
 - **Exchange rate refresh**: Background job (cron) refreshes `exchange_rates` in `billing.currency_config` using configured provider. Updates `last_updated` timestamp. If provider fails, keep existing rates and log warning.
 - **Currency conversion for display**: If invoice currency differs from org's base currency, all monetary amounts on the invoice PDF should show both the original currency amount and the base currency equivalent using the stored exchange rate.
-- **Prisma enums** (aligns with postgres `tax_type` enum):
-  - `billing_tax_type { SALES VAT GST HST UST CUSTOM }` (DB enum values: `sales | vat | gst | usst | customs | hst`; `SALES` in API maps to `sales` in DB, `HST` maps to `hst`)
-  - `billing_invoice_status { draft pending paid overdue void }`
+- **Prisma enums** (aligns with postgres `tax_type` enum — mapping fixed per C-4 note):
+  - `billing_tax_type { SALES VAT GST HST UST CUSTOM }` (DB enum values: `sales | vat | gst | hst | ust | custom` — one-to-one; the legacy `usst`/`customs` values are migrated to `ust`/`custom`)
+  - `billing_invoice_status { draft pending paid overdue voided }` (unified lowercase enum, conflict C-4 — `voided`, not `void`)
   - `developer_integration_status { connected available error }`
 - **RBAC guards**:
   - `OrgAdminGuard`: allows `ORG_ADMIN` and `SUPER_ADMIN`

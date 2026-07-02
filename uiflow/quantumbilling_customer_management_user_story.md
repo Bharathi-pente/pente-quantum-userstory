@@ -1,5 +1,7 @@
 # QuantumBilling User Story: Customer Management
 
+> Aligned with ADR-001 (2026-07-01).
+
 **QB-STORY-030** · Sprint 1 · Phase: Foundation
 
 ---
@@ -65,10 +67,10 @@ Organization
 ### Customer Creation
 
 1. ORG_ADMIN can create a customer under their organization.
-2. Required fields: Customer Name, Billing Email.
-3. Optional fields: Billing Address, Payment Terms.
-4. Customer is assigned a unique `customer_id`.
-5. Customer status defaults to `active`.
+2. Required fields: Customer Name, Billing Email — persisted on `customer.customers.name` and `customer.customers.billing_email` (ERD.md §2).
+3. Optional fields: Billing Address (`customer.customers.billing_address`, jsonb), Payment Terms.
+4. Customer is assigned a unique `customer_id` (`customer.customers.id`).
+5. Customer status defaults to `ACTIVE`.
 
 ### Customer List
 
@@ -87,13 +89,13 @@ Organization
 
 ### Customer Settings
 
-10. Editable fields: Name, Billing Email, Billing Address, Payment Terms.
+10. Editable fields: Name, Billing Email, Billing Address, Payment Terms — `billing_email` and `billing_address` live on `customer.customers` (ERD.md §2).
 11. Cannot change: Organization (fixed after creation).
 
 ### Customer Status
 
-12. Customer can be: active, suspended, canceled.
-13. Suspending a customer suspends all their end users.
+12. Customer status enum: `ACTIVE | SUSPENDED | CHURNED` — the canonical enum per ERD.md (C-16); there is no separate lowercase `active/suspended/canceled` set.
+13. Suspending a customer (`SUSPENDED`) suspends all their end users; `CHURNED` is terminal.
 
 ---
 
@@ -104,8 +106,8 @@ Organization
 | `POST` | `/api/v1/organizations/:orgId/customers` | Create customer |
 | `GET` | `/api/v1/customers/:customerId` | Get customer |
 | `PUT` | `/api/v1/customers/:customerId` | Update customer |
-| `POST` | `/api/v1/customers/:customerId/suspend` | Suspend customer |
-| `POST` | `/api/v1/customers/:customerId/reactivate` | Reactivate customer |
+| `POST` | `/api/v1/customers/:customerId/suspend` | Suspend customer (status → `SUSPENDED`) |
+| `POST` | `/api/v1/customers/:customerId/reactivate` | Reactivate customer (status → `ACTIVE`) |
 | `DELETE` | `/api/v1/customers/:customerId` | Delete customer (if empty) |
 
 ---
@@ -133,4 +135,5 @@ Organization
 
 - Requires: ORG_ADMIN or SUPER_ADMIN
 - Webhook: `customer.created`
-- Audit log: customer management logged
+- Audit log: customer management logged to `platform.audit_logs` (C-7)
+- Status lifecycle and state machine: see the Customer story (QB-STORY-006) — same canonical `ACTIVE | SUSPENDED | CHURNED` enum (C-16)

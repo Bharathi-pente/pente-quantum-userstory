@@ -1,5 +1,7 @@
 # Story 12 — API Key Revocation & Listing
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 3 — Key Creation & Control Plane Flow
 > **Depends on:** Story 11 (key creation)
 > **Blocks:** Story 13
@@ -8,7 +10,7 @@
 
 ## Description
 
-As a **tenant administrator**, I need to list all API keys registered for my organization so I can verify their settings, and immediately revoke any key if it is compromised or no longer needed.
+As a **customer administrator**, I need to list all API keys registered for my organization so I can verify their settings, and immediately revoke any key if it is compromised or no longer needed.
 
 This story implements the key retrieval and revocation control plane endpoints:
 *   `GET /v1/keys?org_id={org_id}`: Lists keys, returning metadata, prefix, and settings (with raw secrets masked for security).
@@ -25,7 +27,7 @@ This story implements the key retrieval and revocation control plane endpoints:
 | 1 | `GET /v1/keys` requires `org_id` as a query parameter; returns `400 BAD_REQUEST` if missing. | Query checks for empty string or whitespace-only params. |
 | 2 | Exposes optional query parameters for pagination: `limit` (default: 100, maximum: 500) and `offset` (default: 0). | Out-of-bounds limit defaults to 100; negative parameters return `400` with code `INVALID_PAGINATION`. |
 | 3 | Exposes optional filter parameter: `status`. | Must be either `"active"` or `"revoked"`. Unsupported values return `400` with code `INVALID_STATUS_FILTER`. |
-| 4 | Queries PostgreSQL `api_keys` matching the criteria, sorting results by `created_at` descending. | Database query must run within a strict timeout of 2 seconds. |
+| 4 | Queries PostgreSQL `developer.api_keys` (canonical home per ERD C-3) matching the criteria, sorting results by `created_at` descending. | Database query must run within a strict timeout of 2 seconds. |
 | 5 | The response must NOT include the SHA-256 hash or raw key string. It must only expose the key `id`, `name`, `key_prefix`, `source_mode`, `status`, `budget_limit_usd`, and `rate_limit_rpm`. | This is critical to prevent leaks. |
 | 6 | Returns `200 OK` with a JSON array of keys and paginated metadata header context. | Empty results return `200 OK` with an empty JSON array `[]` (not `null`). |
 
@@ -75,5 +77,5 @@ This story implements the key retrieval and revocation control plane endpoints:
 
 | Resource | Operation | Purpose |
 |---|---|---|
-| `api_keys` (Postgres) | `SELECT`, `UPDATE` | Read keys by org ID, mark status as `revoked` |
+| `developer.api_keys` (Postgres) | `SELECT`, `UPDATE` | Read keys by org ID, mark `status` as `revoked` and set `revoked_at` (canonical home per ERD C-3) |
 | `apikey:{hashed_key}` (Redis) | `DEL` | Deletes the cached key context to block further requests |

@@ -1,5 +1,7 @@
 # Story 8 — Kafka Consumer & Event Deserialization
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 1 — Analytics Worker
 > **Depends on:** Story 7 (Kafka Setup & Topic Configuration), Story 1 (`UsageEvent` model)
 > **Blocks:** Story 9, Story 10

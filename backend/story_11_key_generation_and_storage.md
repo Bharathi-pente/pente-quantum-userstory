@@ -1,5 +1,7 @@
 # Story 11 — API Key Generation & Write-Through Caching
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 3 — Key Creation & Control Plane Flow
 > **Depends on:** Phase 0 Story 1 (domain types), Story 2 (Redis auth setup)
 > **Blocks:** Story 12 (revocation)
@@ -8,7 +10,7 @@
 
 ## Description
 
-As a **tenant administrator**, I need to create new API keys for my organization, configuring custom metadata (budgets, rate limits, allowlists) and storing them securely, so that my applications can authenticate against the event ingestion endpoints immediately after key creation.
+As a **customer administrator**, I need to create new API keys for my organization, configuring custom metadata (budgets, rate limits, allowlists) and storing them securely, so that my applications can authenticate against the event ingestion endpoints immediately after key creation.
 
 This story implements the `POST /v1/keys` endpoint. The service generates a random API key (or registers it via the upstream LiteLLM Gateway), hashes the key using SHA-256 for secure storage in PostgreSQL, and caches the raw key context contextually in Redis (`apikey:{hash}`) to update the gateway authorization path in real-time.
 
@@ -20,13 +22,13 @@ This story implements the `POST /v1/keys` endpoint. The service generates a rand
 
 | # | Criterion | Details / Edge Cases |
 |---|---|---|
-| 1 | `POST /v1/keys` accepts a JSON request body with: `org_id` (required), `name` (required), `tenant_id` (optional), `source_mode` (optional, default: `direct_ingest`), `budget_limit_usd` (optional), `rate_limit_rpm` (optional), `allowed_models` (optional). | Reject requests missing `org_id` or `name` with `400 BAD_REQUEST`. |
+| 1 | `POST /v1/keys` accepts a JSON request body with: `org_id` (required), `name` (required), `customer_id` (optional), `source_mode` (optional, default: `direct_ingest`), `budget_limit_usd` (optional), `rate_limit_rpm` (optional), `allowed_models` (optional). | Reject requests missing `org_id` or `name` with `400 BAD_REQUEST`. |
 | 2 | Reject invalid `source_mode` values (must be one of `direct_ingest`, `virtual_key`, `byok`). | Invalid modes return `400 BAD_REQUEST` with code `INVALID_SOURCE_MODE`. |
 | 3 | Key `name` must be alphanumeric (allowing spaces and dashes), between 3 and 100 characters in length. | Violating length or pattern returns `400 BAD_REQUEST` with code `INVALID_KEY_NAME`. |
 | 4 | `budget_limit_usd` must be a positive decimal number representing the spending cap. | Negative budget returns `400` with code `INVALID_BUDGET_LIMIT`. |
 | 5 | `rate_limit_rpm` must be a positive integer representing request-per-minute threshold limit. | Negative or zero rate limits return `400` with code `INVALID_RATE_LIMIT`. |
 | 6 | `allowed_models` must be a valid JSON array of strings if provided. | Malformed JSON array in `allowed_models` returns `400` with code `INVALID_ALLOWED_MODELS`. |
-| 7 | If `tenant_id` is supplied, verify that the tenant exists and is active under `org_id` in PostgreSQL. | If tenant not found or inactive, return `400 BAD_REQUEST` with code `INVALID_TENANT_ID`. |
+| 7 | If `customer_id` is supplied, verify that the customer exists and is active under `org_id` in the canonical `customer.customers` table (ADR-001 §2.1). | If customer not found or inactive, return `400 BAD_REQUEST` with code `INVALID_CUSTOMER_ID`. |
 
 ### Key Provisioning & Hashing
 
@@ -41,7 +43,7 @@ This story implements the `POST /v1/keys` endpoint. The service generates a rand
 
 | # | Criterion | Details / Edge Cases |
 |---|---|---|
-| 12 | Insert a row into the PostgreSQL `api_keys` table with: generated UUID, hashed key, prefix, org/tenant IDs, mode, active status, cost budget limit, RPM limit, allowed models, and metadata context. | Insertion must be wrapped in a database timeout context (maximum 2 seconds). |
+| 12 | Insert a row into the PostgreSQL `developer.api_keys` table (canonical home per ERD C-3: `key_hash`, `key_prefix`, `source_mode`, `budget_limit_usd`, `rate_limit_rpm`/`rate_limit_tpm`, `allowed_models`, `status`) with: generated UUID, hashed key, prefix, `org_id`/`customer_id`, mode, active status, cost budget limit, RPM limit, allowed models, and metadata context. | Insertion must be wrapped in a database timeout context (maximum 2 seconds). |
 | 13 | Perform a **write-through update to Redis**: store the JSON-serialized `KeyContext` under the key `apikey:{hashedKey}`. | Caching must occur immediately following the successful Postgres commit. If Redis caching fails, log an error, but do not fail the request. |
 | 14 | The Redis cache record must be stored permanently (no TTL) to prevent authentication failure on ingestion paths. | The status field must be explicitly set to `"active"`. |
 | 15 | Return `201 CREATED` along with the raw unhashed key (only shown once to the creator) and metadata context. | The raw key is NEVER saved in the database or logs. |
@@ -63,12 +65,12 @@ This story implements the `POST /v1/keys` endpoint. The service generates a rand
 * **Then**: Returns `201 CREATED`, showing the plain key (starting with `sk-live-`); PostgreSQL contains a hashed key record; Redis contains the corresponding key context at `apikey:{hash}`.
 
 ### TC-02: Create Mode B Virtual Key with Budget Limit
-* **Given**: Valid database state with organization `org_acme` and tenant `tenant_1` active.
+* **Given**: Valid database state with organization `org_acme` and customer `customer_1` active.
 * **When**: `POST /v1/keys` with:
   ```json
   {
     "org_id": "org_acme",
-    "tenant_id": "tenant_1",
+    "customer_id": "customer_1",
     "name": "Acme Web Customer Key",
     "source_mode": "virtual_key",
     "budget_limit_usd": 100.00,
@@ -91,9 +93,9 @@ This story implements the `POST /v1/keys` endpoint. The service generates a rand
 * **When**: `POST /v1/keys` with `org_id="org_acme"`, `name="Key"`, `budget_limit_usd=-50.00`
 * **Then**: Returns `400 BAD_REQUEST` and error code `INVALID_BUDGET_LIMIT`.
 
-### TC-05: Non-Existent Tenant ID Validation
-* **When**: `POST /v1/keys` with `org_id="org_acme"`, `name="Key"`, `tenant_id="tenant_nonexistent"`
-* **Then**: Returns `400 BAD_REQUEST` and error code `INVALID_TENANT_ID`.
+### TC-05: Non-Existent Customer ID Validation
+* **When**: `POST /v1/keys` with `org_id="org_acme"`, `name="Key"`, `customer_id="customer_nonexistent"`
+* **Then**: Returns `400 BAD_REQUEST` and error code `INVALID_CUSTOMER_ID`.
 
 ### TC-06: LiteLLM Gateway Timeout Fallback
 * **Given**: LiteLLM Gateway proxy is down/unreachable.
@@ -106,8 +108,8 @@ This story implements the `POST /v1/keys` endpoint. The service generates a rand
 
 | Resource | Operation | Purpose |
 |---|---|---|
-| `api_keys` (Postgres) | `INSERT` | Securely stores API key metadata and SHA-256 hash |
-| `tenants` (Postgres) | `SELECT` | Verifies tenant existence and association to organization |
+| `developer.api_keys` (Postgres) | `INSERT` | Securely stores API key metadata and SHA-256 hash (canonical home per ERD C-3) |
+| `customer.customers` (Postgres) | `SELECT` | Verifies customer existence and association to organization (ADR-001 §2.1 — replaces the dropped `tenants` table) |
 | `apikey:{hashed_key}` (Redis) | `SET` | Caches the JSON KeyContext for sub-millisecond gateway lookups |
 
 ---

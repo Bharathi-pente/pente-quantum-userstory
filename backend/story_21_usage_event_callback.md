@@ -1,5 +1,7 @@
 # Story 21 — Usage Event Callback (LiteLLM → Ingest API)
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 5 — LiteLLM Gateway Integration
 > **Depends on:** Story 20 (keys exist in LiteLLM DB), Phase 0 Story 4 (POST /v1/events)
 > **Blocks:** Story 24 (deployment wraps everything)
@@ -39,8 +41,8 @@ The callback is a Python class implementing LiteLLM's `CustomLogger` interface. 
 {
   "event_id": "<uuid4>",
   "org_id": "",
-  "tenant_id": "",
-  "user_id": "<from request 'user' field>",
+  "customer_id": "",
+  "end_user_id": "<from request 'user' field>",
   "session_id": "<from metadata or empty>",
   "event_type": "llm_request",
   "model": "<resolved model>",
@@ -70,7 +72,7 @@ The callback is a Python class implementing LiteLLM's `CustomLogger` interface. 
 | 10 | `Content-Type: application/json` |
 | 11 | POST to `{EVENT_ENGINE_INGEST_URL}` (default `http://localhost:8011/v1/events`) |
 | 12 | Timeout: 5 seconds |
-| 13 | `org_id`, `tenant_id`, `source_mode`, `key_id` are **intentionally left empty or omitted** in the callback payload — the Ingest API enriches them from the Redis key context |
+| 13 | `org_id`, `customer_id`, `source_mode`, `key_id` are **intentionally left empty or omitted** in the callback payload — the Ingest API enriches them from the Redis key context |
 
 ### Error & Status Handling
 
@@ -145,6 +147,6 @@ The callback is a Python class implementing LiteLLM's `CustomLogger` interface. 
 - **The callback must NOT block the LLM response.** Use `async` HTTP client (`aiohttp` or `httpx.AsyncClient`). LiteLLM calls `async_log_success_event` after the response is already streamed to the client, so a slow callback doesn't affect user latency — but a 30s timeout would still delay the next request.
 - **`user_api_key` extraction:** The raw key is passed in `kwargs["litellm_params"]["metadata"]["user_api_key"]`. This is set by LiteLLM when the request is authenticated. If missing, log ERROR and skip the event (no key → Ingest API would reject with 401 anyway).
 - **Event ID generation:** Use Python's `uuid.uuid4()` to generate a unique `event_id` for each callback invocation. The Ingest API uses this for idempotency.
-- **`org_id` and `tenant_id` are EMPTY in the callback payload.** The Ingest API's auth middleware looks up the key in Redis, gets the `KeyContext`, and enriches the event with the correct org/tenant/source_mode/key_id. This is the anti-spoofing design from Phase 0.
+- **`org_id` and `customer_id` are EMPTY in the callback payload.** The Ingest API's auth middleware looks up the key in Redis, gets the `KeyContext`, and enriches the event with the correct org/customer/source_mode/key_id. This is the anti-spoofing design from Phase 0.
 - **HTTPS in production:** The callback URL should use HTTPS in production. The Ingest API must have a valid TLS certificate.
 - **No batching in callback:** Each LLM request generates exactly one callback call. For high-throughput deployments (500k events/s), the Ingest API should be scaled horizontally behind a load balancer.

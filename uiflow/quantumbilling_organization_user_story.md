@@ -1,5 +1,7 @@
 # QuantumBilling User Story: Manage Organization
 
+> Aligned with ADR-001 (2026-07-01).
+
 **QB-STORY-002** · Sprint 2 · Phase Zero → Feature
 
 # Manage Organization — CRUD operations for organisations
@@ -24,7 +26,7 @@ Key capabilities:
 - SUPER_ADMIN can update org details: `name`, `billing_email`, `currency`, `country`, `industry`, `timezone`
 - SUPER_ADMIN can deactivate an org (soft delete — sessions revoked for all members)
 - ORG_ADMIN can view their own org details (read-only for most fields)
-- All org changes are written to `audit_logs`
+- All org changes are written to `platform.audit_logs` (canonical actor-action audit table — ERD.md conflict C-7)
 - State machine: ACTIVE → SUSPENDED → (reactivated) ACTIVE, or SUSPENDED → DELETED (hard delete after grace period)
 
 ---
@@ -38,7 +40,7 @@ Key capabilities:
 | <span style="display:inline-block;font-size:11px;font-weight:500;padding:2px 8px;border-radius:4px;background:#E1F5EE;color:#085041">CUSTOMER</span> | No | No | No | Own account |
 | <span style="display:inline-block;font-size:11px;font-weight:500;padding:2px 8px;border-radius:4px;background:#F1EFE8;color:#444441">END_USER</span> | No | No | No | Read-only |
 
-> **Note:** The RBAC system uses `identity.roles` + `identity.role_permissions`. The reference HTML used `TENANT_ADMIN` — in the actual ERD this role is `ORG_ADMIN` (admin of the organisation). Role name used in this story: `ORG_ADMIN`. Adjust guard names accordingly if the actual role enum uses a different label.
+> **Note:** The RBAC system uses `identity.roles` + `identity.role_permissions`. The reference HTML used `TENANT_ADMIN` — in ERD.md this role is `ORG_ADMIN` (admin of the organisation). Role name used in this story: `ORG_ADMIN`. Adjust guard names accordingly if the actual role enum uses a different label.
 
 ---
 
@@ -46,13 +48,13 @@ Key capabilities:
 
 1. SUPER_ADMIN can create a new org by submitting `name`, `billing_email`, `currency`, `country`, `industry`, and `timezone`. The `name` field is required; all others have sensible defaults. An ORG_ADMIN membership is created for the creating SUPER_ADMIN so they can manage the new org immediately.
 
-2. Org record is inserted into `identity.organizations` with no explicit status column (active by default). All `identity.users` linked to this org via `org_id` retain their sessions.
+2. Org record is inserted into `identity.organizations` with `status = ACTIVE` (enum `ACTIVE | SUSPENDED | DELETED` and nullable `suspended_at`, per ERD.md §1 / conflict C-14). All `identity.users` linked to this org via `org_id` retain their sessions.
 
 3. SUPER_ADMIN can list all orgs with pagination (`?page=1&limit=20`), sorted by `created_at` DESC. Response includes `totalCount`, `hasNextPage`, and per-org: id, name, billing_email, currency, country, member_count, created_at.
 
 4. SUPER_ADMIN can update an org's `name`, `billing_email`, `currency`, `country`, `industry`, and `timezone` via `PATCH /api/v1/orgs/:orgId`.
 
-5. SUPER_ADMIN can soft-deactivate an org via `DELETE /api/v1/orgs/:orgId`. Status transition is managed via the `onboarding_progress` table or a dedicated `org_status` field. All active Keycloak sessions for members of that org are revoked.
+5. SUPER_ADMIN can soft-deactivate an org via `DELETE /api/v1/orgs/:orgId`. This sets `identity.organizations.status = SUSPENDED` and stamps `suspended_at` (C-14 resolved — no derivation from `onboarding_progress`). All active Keycloak sessions for members of that org are revoked.
 
 6. Deactivating an org that has active subscriptions should warn/block. If active subscriptions exist, return `409 SUBSCRIPTION_ACTIVE`. The guard can be bypassed with `?force=true` only if the setting `ALLOW_FORCE_SUSPENSION=true`.
 
@@ -62,7 +64,7 @@ Key capabilities:
 
 9. ORG_ADMIN can `GET /api/v1/orgs/:orgId` to view their own org details (read-only). They cannot PATCH or DELETE. Attempting returns `403 FORBIDDEN`.
 
-10. All create, update, and delete operations on orgs are written to `audit_logs` with actor_id, action, target_org_id, and a JSON `metadata` payload containing before/after state.
+10. All create, update, and delete operations on orgs are written to `platform.audit_logs` (C-7) with `user_id` (actor), `action`, `resource_type = 'organization'`, `resource_id`, and `old_value`/`new_value` JSON payloads containing before/after state.
 
 ---
 
@@ -169,15 +171,15 @@ Key capabilities:
 
 | Table | Operation | Key columns |
 |-------|-----------|-------------|
-| `identity.organizations` | INSERT · SELECT · UPDATE · DELETE | id, name, billing_email, currency, country, industry, timezone, created_at |
-| `audit.security_audit_logs` | INSERT | id, actor_id, action, target_org_id, metadata (JSON), created_at |
+| `identity.organizations` | INSERT · SELECT · UPDATE · DELETE | id, name, billing_email, currency, country, industry, timezone, status, suspended_at, created_at |
+| `platform.audit_logs` | INSERT | id, org_id, user_id, action, resource_type, resource_id, old_value, new_value, created_at |
 | `identity.users` | SELECT (for session revocation) | id, org_id, role_id, keycloak_id |
 | `identity.invitations` | SELECT · DELETE (cascade) | id, org_id, email, role_id, expires_at |
 | `identity.roles` | SELECT | id, org_id, name |
 | `customer.subscriptions` | SELECT (for guard check) | id, org_id, status, current_period_end |
 | `identity.onboarding_progress` | SELECT · UPDATE | id, org_id, current_step, is_completed |
 
-> **Schema note:** The ERD (`identity.organizations`) does not have an explicit `status` column. Status may be derived from `onboarding_progress.is_completed` + whether active Keycloak sessions exist, OR a status column may need to be added. Implementation team to confirm. Treat "SUSPENDED" as a soft-delete flag — org record retained but sessions revoked.
+> **Schema note (C-14 resolved):** ERD.md §1 gives `identity.organizations` an explicit `status` column (enum `ACTIVE | SUSPENDED | DELETED`) plus a nullable `suspended_at` timestamp. Status is stored, not derived from `onboarding_progress` or session state. Trial state is **not** an org status — trials live on subscriptions (`customer.subscriptions.status = 'trialing'`, CR-14). "SUSPENDED" is the soft-delete state — org record retained but sessions revoked.
 
 ---
 
@@ -260,8 +262,8 @@ Accessible at `/admin/orgs/:orgId` (SUPER_ADMIN) or `/settings/organisation` (OR
 ## Dependencies & notes for agent
 
 - **Keycloak session revocation:** On SUSPEND, call `DELETE /admin/realms/quantumbilling/users/{userId}/sessions` for each member. Batch in groups of 20 to avoid timeouts. Log failures but do not block the suspension itself.
-- **Org status:** The ERD `identity.organizations` table has no `status` column. Implementers should either add a `status` column or derive it from `onboarding_progress` state. SUPER_ADMIN deactivation should add a `suspended_at` timestamp column to the org record.
-- **Prisma model:** `Organization` (maps to `identity.organizations`) with fields: id (UUID), name, billingEmail, currency, country, industry, timezone. Consider adding: `status` enum `{ ACTIVE SUSPENDED DELETED }`, `suspendedAt` timestamp.
-- **RoleEnum:** `{ SUPER_ADMIN ORG_ADMIN CUSTOMER END_USER }` — note the ERD uses `identity.roles` with a `name` column, not a fixed enum.
-- **Audit log actions:** `ORG_CREATED`, `ORG_UPDATED`, `ORG_SUSPENDED`, `ORG_REACTIVATED`, `ORG_HARD_DELETED`.
-- **Subscriptions guard:** Before suspend, query `customer.subscriptions` for `org_id = target` and `status = 'ACTIVE'`. If found and `ALLOW_FORCE_SUSPENSION != true`, block.
+- **Org status (C-14 resolved):** `identity.organizations` carries `status` (enum `ACTIVE | SUSPENDED | DELETED`) and a nullable `suspended_at` timestamp per ERD.md §1. SUPER_ADMIN deactivation sets `status = SUSPENDED` and stamps `suspended_at`; reactivation sets `status = ACTIVE` and clears it. Trial state lives on subscriptions (`trialing`), never on the org.
+- **Prisma model:** `Organization` (maps to `identity.organizations`) with fields: id (UUID), name, billingEmail, currency, country, industry, timezone, `status` enum `{ ACTIVE SUSPENDED DELETED }`, `suspendedAt` timestamp (nullable).
+- **RoleEnum:** `{ SUPER_ADMIN ORG_ADMIN CUSTOMER END_USER }` — note ERD.md uses `identity.roles` with a `name` column, not a fixed enum.
+- **Audit log actions:** `ORG_CREATED`, `ORG_UPDATED`, `ORG_SUSPENDED`, `ORG_REACTIVATED`, `ORG_HARD_DELETED` — all rows written to `platform.audit_logs` (C-7).
+- **Subscriptions guard:** Before suspend, query `customer.subscriptions` for `org_id = target` and `status IN ('active', 'trialing')` (lowercase status set per ERD.md §2). If found and `ALLOW_FORCE_SUSPENSION != true`, block.

@@ -1,5 +1,7 @@
 # Story 23 — BYOK Decryption & Provider Routing
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 5 — LiteLLM Gateway Integration
 > **Depends on:** Story 20 (BYOK keys synced to LiteLLM DB), Phase 3 Story 13 (BYOK encryption)
 > **Blocks:** Story 24 (deployment)
@@ -56,7 +58,7 @@ A pre-call hook intercepts every request. If the API key's `source_mode == "byok
 
 | # | Criterion |
 |---|---|
-| 17 | Every BYOK request logs an audit entry: `actor`=user_id, `action`="byok_proxy_request", `resource_type`="ai_provider_call", `metadata`={provider, model, tokens_estimate} |
+| 17 | Every BYOK request logs an audit entry: `actor`=end_user_id, `action`="byok_proxy_request", `resource_type`="ai_provider_call", `metadata`={provider, model, tokens_estimate} |
 | 18 | Guardrail blocks log: `action`="guardrail_blocked", `details`={rule, matched_pattern} |
 | 19 | Decryption failures log: `action`="byok_decryption_failed", `details`={error_type} (no key material) |
 
@@ -116,6 +118,7 @@ A pre-call hook intercepts every request. If the API key's `source_mode == "byok
 ## Dependencies & Notes for Agent
 
 - **AES-256-GCM encryption parameters from Phase 3 Story 13:** The encrypted key is produced by Story 13 and stored in two locations: (1) `byok_provider_keys` table as separate `encrypted_key BYTEA` and `key_iv BYTEA` columns, and (2) LiteLLM's `VerificationToken.metadata.customer_provider_key` as a combined base64 blob. The BYOK middleware reads from the LiteLLM metadata path at request time for performance (no extra DB query). The blob format is: `base64Encode(IV[12] + ciphertext + tag[16])`. Decryption extracts the IV, ciphertext, and tag from the blob, derives the AES-256 key via SHA-256(`BYOK_MASTER_KEY`), and calls `AESGCM(key).decrypt(IV, ciphertext+tag, associated_data=None)`.
+- **Production key management (ADR-001 §7):** `BYOK_MASTER_KEY` as a raw env var (with its unsafe local fallback) is development-only. Before production, adopt KMS/Vault **envelope encryption** for the BYOK master key per ADR-001 §7. The decryption mechanics in this story are unchanged — only the source/protection of the master key changes.
 - **Never log the decrypted key.** Log the key_id and source_mode, but mask or omit the actual credential. Use Python's `logging` with a custom filter if needed.
 - **The `user_api_key_dict` object** is passed by LiteLLM to every hook. It contains the full `VerificationToken` row including `metadata` (JSON-deserialized). The `source_mode` and `customer_provider_key` are accessed via `user_api_key_dict.metadata.get("source_mode")` and `user_api_key_dict.metadata.get("customer_provider_key")`.
 - **Provider mapping is a simple Python dict.** Keep it in a constant at the top of the file. Add new providers as needed.

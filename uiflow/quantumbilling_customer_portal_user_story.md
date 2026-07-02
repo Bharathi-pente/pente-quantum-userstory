@@ -1,5 +1,7 @@
 # QuantumBilling User Story: Customer Portal
 
+> Aligned with ADR-001 (2026-07-01).
+
 **QB-STORY-026** · Sprint 3 · Phase: UI Feature
 
 ---
@@ -33,6 +35,7 @@ Key sections:
 - **Usage & Limits** — usage against plan limits
 - **Payment Methods** — manage payment methods on file
 - **My Credits** — credit balance and transaction history
+- **Wallet** — prepaid wallet balance, burndown, and top-up (CR-2, `billing.wallets`)
 - **Usage Analytics** — detailed usage charts and breakdowns
 - **Embed Widgets** — access embeddable components
 
@@ -60,6 +63,7 @@ Key sections:
 | Payment Methods | Manage payment methods | Yes (add/remove) |
 | Team Usage | Aggregate team usage (not per-user) | Read-only |
 | My Credits | Credit balance + ledger | Read-only |
+| Wallet | Prepaid balance + top-up (CR-2) | Yes (top up) |
 | Usage Analytics | Detailed usage charts | Read-only |
 | Embed Widgets | Embeddable components | Read-only |
 
@@ -81,12 +85,12 @@ Key sections:
 
 ### Customer Portal Invoices
 
-6. **Invoices** tab lists all invoices for the customer's organization.
-7. Invoice list columns: Invoice #, Amount, Status, Due Date, Actions.
-8. Status badges: Paid (green), Pending (amber), Overdue (red).
-9. **View** action — opens invoice detail.
+6. **Invoices** tab lists all invoices for the customer's organization. Invoices are written by the Go billing worker; the portal is a read/present/pay surface (ADR-001 §2).
+7. Invoice list columns: Invoice # (`invoice_number`), Total (`total` — canonical column, not `amount`; C-19), Status, Due Date, Actions.
+8. Invoice status uses the canonical set `draft | pending | paid | overdue | voided` (C-4). Status badges: Paid (green), Pending (amber), Overdue (red), Voided (gray). Draft invoices are not shown to customers.
+9. **View** action — opens invoice detail (subtotal, `credits_applied`, tax, `total`).
 10. **Download PDF** action — downloads invoice PDF.
-11. **Pay Now** action — available for pending/overdue invoices; opens payment flow.
+11. **Pay Now** action — available for pending/overdue invoices; opens payment flow. Note: per CR-6, finalized invoices are auto-charged to the default Stripe payment method by default — "Pay Now" is the manual fallback for failed auto-collection, wire/check customers, or auto-collection disabled.
 12. Cannot void, edit, or cancel invoices (read-only for customers).
 13. Filters: All, Paid, Pending, Overdue.
 
@@ -108,13 +112,14 @@ Key sections:
     - Percentage used
     - Status badge: OK (green), Warning (amber, 75-90%), Critical (red, >90%)
 22. Progress bar visualization for each meter.
-23. Usage is shown for the current billing period.
+23. Usage is shown for the current billing period (the subscription anniversary window, ADR-001 §3.1).
 24. Cannot modify limits (read-only; contact sales to change plan).
+24a. Usage figures come from `customer.usage_summary`, the ClickHouse-fed display rollup (ADR-001 §2) — never from a Postgres `usage_events` table (deleted per C-1).
 
 ### Payment Methods
 
-25. **Payment Methods** tab lists all payment methods on file.
-26. Payment method shows: type (Credit Card, ACH), last 4 digits, expiry (card), status (default/active).
+25. **Payment Methods** tab lists all payment methods on file. Payment methods are customer-attached (`billing.payment_methods.customer_id`, C-6).
+26. Payment method shows: `method_type` (`CARD | ACH | WIRE | BANK_TRANSFER | OTHER`), `last4`, expiry (card), status (default/active). Canonical column names are `method_type`/`last4` (C-6), and card data is never stored — only the Stripe `gateway_token`.
 27. **Add Payment Method** — opens form to add new credit card or ACH account.
 28. **Remove** action — removes a payment method (cannot remove if it's the only one or the default).
 29. **Set as Default** action — sets a payment method as the default for future invoices.
@@ -124,17 +129,24 @@ Key sections:
 
 31. **Team Usage** tab shows aggregate team usage for the customer's organization.
 32. Shows total tokens, total requests, total cost for the billing period.
-33. **Does NOT show per-user breakdown** — this is visible only to ORG_ADMIN.
+33. **Does NOT show per-user breakdown** — this is visible only to ORG_ADMIN. The BFF requests aggregate-only endpoints for the CUSTOMER role.
 34. Chart showing daily usage trend.
 35. Can export aggregate team usage as CSV.
+35a. All team-usage data is served by the NestJS BFF proxying the Go phase-4 analytics APIs (ClickHouse `usage_events_dedup_v`), per ADR-001 §2 — not by SQL over Postgres usage tables.
 
 ### My Credits
 
 36. **Credits** tab shows credit balance and transaction history.
-37. Summary cards: Available Balance, Used This Month, Expiring Soon.
+37. Summary cards: Available Balance (sum of `billing.credits.remaining_amount` — canonical column, not `remaining_balance`; C-18), Used This Month, Expiring Soon.
 38. **Recent Transactions** table shows:
     - Date, Type (grant/usage/adjustment), Description, Amount (+/-), Running Balance
 39. Cannot grant, edit, or revoke credits (read-only for customers).
+
+### Wallet (CR-2)
+
+39a. **Wallet** section shows the prepaid wallet balance (`billing.wallets.balance`), currency, and status, with a burndown view fed by `billing.wallet_transactions`. Real-time balance updates arrive over the `updates:{org_id}` WebSocket channel.
+39b. **Top Up** action — customer can top up the wallet via a saved payment method (Stripe PaymentIntent); the transaction appends to `billing.wallet_transactions` and the credit ledger.
+39c. Auto top-up settings display: enabled/disabled, `low_balance_threshold`, `topup_amount`, and the payment method used. Customers may edit their own auto top-up configuration.
 
 ### Usage Analytics
 
@@ -145,6 +157,7 @@ Key sections:
     - Cost breakdown by model
 42. Filters: Date range, Model.
 43. Can export usage data as CSV.
+43a. All analytics data is served via the NestJS BFF → Go phase-4 analytics APIs (aggregate-only for the CUSTOMER role), per ADR-001 §2.
 
 ### Embed Widgets
 
@@ -326,9 +339,13 @@ Key sections:
 | `DELETE` | `/api/v1/payment-methods/:pmId` | Remove payment method | JWT · Guard: `CustomerGuard` |
 | `PUT` | `/api/v1/payment-methods/:pmId/default` | Set default payment method | JWT · Guard: `CustomerGuard` |
 | `GET` | `/api/v1/customers/:customerId/team-usage` | Aggregate team usage (no per-user) | JWT · Guard: `CustomerGuard` |
-| `GET` | `/api/v1/customers/:customerId/credits` | Get credit balance | JWT · Guard: `CustomerGuard` |
+| `GET` | `/api/v1/customers/:customerId/credits` | Get credit balance (`remaining_amount`, C-18) | JWT · Guard: `CustomerGuard` |
 | `GET` | `/api/v1/customers/:customerId/credits/ledger` | Get credit ledger | JWT · Guard: `CustomerGuard` |
-| `GET` | `/api/v1/customers/:customerId/usage-analytics` | Detailed usage analytics | JWT · Guard: `CustomerGuard` |
+| `GET` | `/api/v1/customers/:customerId/wallet` | Get wallet balance + auto top-up config (CR-2) | JWT · Guard: `CustomerGuard` |
+| `GET` | `/api/v1/customers/:customerId/wallet/transactions` | List wallet transactions (burndown) | JWT · Guard: `CustomerGuard` |
+| `POST` | `/api/v1/customers/:customerId/wallet/topup` | Top up wallet via saved payment method | JWT · Guard: `CustomerGuard` |
+| `PUT` | `/api/v1/customers/:customerId/wallet/auto-topup` | Update auto top-up settings | JWT · Guard: `CustomerGuard` |
+| `GET` | `/api/v1/customers/:customerId/usage-analytics` | Detailed usage analytics (BFF proxy → Go phase-4 APIs) | JWT · Guard: `CustomerGuard` |
 | `GET` | `/api/v1/customers/:customerId/widgets` | List available embed widgets | JWT · Guard: `CustomerGuard` |
 
 ---
@@ -339,18 +356,22 @@ Key sections:
 |-------|--------|-----------|-------------|
 | `customers` | `customer` | SELECT | `id, org_id, name, status, plan` |
 | `organizations` | `identity` | SELECT | `id, name` |
-| `invoices` | `billing` | SELECT | `id, customer_id, status, total, due_date` |
-| `invoice_line_items` | `billing` | SELECT | `id, invoice_id, description, amount` |
-| `subscriptions` | `billing` | SELECT | `id, customer_id, plan_id, status` |
+| `invoices` | `billing` | SELECT | `id, customer_id, invoice_number, status (draft\|pending\|paid\|overdue\|voided — C-4), subtotal, credits_applied, tax_amount, total, due_date` |
+| `invoice_line_items` | `billing` | SELECT | `id, invoice_id, line_type, description, quantity, unit_price, amount` |
+| `subscriptions` | `customer` | SELECT | `id, customer_id, plan_id, status, current_period_start, current_period_end` |
 | `plans` | `catalog` | SELECT | `id, name, features` |
 | `plan_features` | `catalog` | SELECT | `id, plan_id, feature_id` |
 | `features` | `catalog` | SELECT | `id, name, description` |
 | `entitlement_grants` | `customer` | SELECT | `id, customer_id, feature_id, expires_at` |
-| `usage_events` | `billing` | SELECT · SUM | `id, customer_id, meter_id, value, cost, event_timestamp` |
-| `meters` | `catalog` | SELECT | `id, name, aggregation` |
-| `payment_methods` | `billing` | SELECT · INSERT · DELETE | `id, customer_id, type, last_four, is_default, status` |
-| `credits` | `billing` | SELECT | `id, customer_id, remaining_amount, status` |
-| `credit_ledger` | `billing` | SELECT | `id, customer_id, type, amount, balance` |
+| `usage_summary` | `customer` | SELECT | `customer_id, meter_id, period_start, period_end, total_usage, total_cost` (ClickHouse-fed display rollup — ADR-001 §2) |
+| `meters` | `catalog` | SELECT | `id, name, event_type, aggregation` |
+| `payment_methods` | `billing` | SELECT · INSERT · DELETE | `id, customer_id, method_type, last4, is_default, status` (customer-attached, C-6) |
+| `credits` | `billing` | SELECT | `id, org_id, customer_id, remaining_amount (C-18), status` |
+| `credit_ledger` | `billing` | SELECT | `id, credit_id, invoice_id, type, amount, balance` |
+| `wallets` | `billing` | SELECT | `id, customer_id, balance, currency, low_balance_threshold, auto_topup_enabled, topup_amount, status` (CR-2) |
+| `wallet_transactions` | `billing` | SELECT | `id, wallet_id, type, amount, balance_after, created_at` (CR-2) |
+
+> **No Postgres `usage_events` table (C-1 / ADR-001 §2):** raw usage lives only in ClickHouse `events.usage_events`. All usage displays (Overview chart, Usage & Limits, Team Usage, Usage Analytics) are served by the NestJS BFF proxying the Go phase-4 analytics APIs — aggregate-only for the CUSTOMER role — with `customer.usage_summary` as the display rollup for limits.
 
 ---
 
@@ -371,6 +392,7 @@ Key sections:
 │ 💳 Payment Methods      │
 │ 👥 Team Usage           │
 │ 🎁 My Credits           │
+│ 👛 Wallet               │
 │ 📉 Usage Analytics      │
 │ 📦 Embed Widgets        │
 ├─────────────────────────┤
@@ -403,17 +425,17 @@ Key sections:
 ### Invoices Page
 
 **Invoice Table:**
-| Invoice # | Amount | Status | Due Date | Actions |
+| Invoice # | Total | Status | Due Date | Actions |
 |-----------|--------|--------|----------|---------|
 | INV-2026-01-001 | $48,500 | Paid | Jan 31 | View, Download |
 | INV-2025-12-001 | $52,340 | Paid | Dec 31 | View, Download |
 
 **Invoice Detail:**
-- Invoice number, status badge
+- Invoice number, status badge (`draft|pending|paid|overdue|voided`)
 - Issue date, due date
 - Line items table
-- Summary: Subtotal, Credits, Tax, Total
-- Pay Now button (if pending/overdue)
+- Summary: Subtotal, Credits Applied (`credits_applied`), Tax, Total (`total`)
+- Pay Now button (if pending/overdue — manual fallback to CR-6 auto-collection)
 
 ### My Entitlements Page
 
@@ -483,6 +505,17 @@ Key sections:
 |------|------|-------------|--------|---------|
 | Dec 25 | usage | Daily usage - Dec 25 | -$1,250 | $20,600 |
 
+### Wallet Page (CR-2)
+
+**Summary:**
+| Wallet Balance | Auto Top-Up | Threshold |
+|----------------|-------------|-----------|
+| $1,240.50 | Enabled ($500) | $200 |
+
+- Real-time balance (WebSocket-fed) with burndown chart from `billing.wallet_transactions`
+- [Top Up] button → amount + saved payment method → Stripe PaymentIntent → receipt
+- Auto top-up settings card: toggle, threshold, top-up amount, payment method
+
 ### Usage Analytics Page
 
 **Charts:**
@@ -509,10 +542,11 @@ Key sections:
 - **RBAC Enforcement:** Customer portal endpoints use `CustomerGuard` which verifies `actor.customer_id === params.customer_id`.
 - **No Per-User Data for CUSTOMER:** Team Usage in the customer portal is aggregate only. Per-end-user breakdown is restricted to ORG_ADMIN.
 - **Impersonation:** SUPER_ADMIN can impersonate a customer by passing `X-Impersonate: customer_id` header or using an admin switch feature. Impersonation is logged.
-- **Payment Processing:** Invoice payment integrates with the payment gateway (Stripe). Never store raw card details — use payment gateway tokens.
-- **Credits Read-Only for Customers:** Customers cannot grant or revoke credits. This is managed by ORG_ADMIN or SUPER_ADMIN.
+- **Payment Processing (CR-6):** Auto-collection is the default — on invoice finalization the Go billing worker auto-charges the default Stripe payment method with smart retries feeding dunning. The portal "Pay Now" flow covers manual cases (failed auto-charge, wire/check terms, auto-collection disabled). Never store raw card details — use Stripe `gateway_token` only. Payment methods are customer-attached with `method_type`/`last4` (C-6).
+- **Credits Read-Only for Customers:** Customers cannot grant or revoke credits. This is managed by ORG_ADMIN or SUPER_ADMIN. Balances read `billing.credits.remaining_amount` (C-18).
+- **Wallet (CR-2):** `billing.wallets` is the record; Redis (`wallet:{customer_id}`) is the enforcement cache. Balance deltas stream over `updates:{org_id}` Pub/Sub → WebSocket. Top-ups and auto top-ups create `billing.wallet_transactions` rows and Stripe PaymentIntents; failures feed dunning.
 - **Entitlements:** Features are determined by the customer's active plan(s). Custom grants override plan defaults temporarily.
-- **Usage Aggregation:** Usage in the customer portal is aggregated daily or per billing period. Real-time event data is not shown directly.
+- **Usage Aggregation (ADR-001 §2):** All usage displays come via the NestJS BFF proxying the Go phase-4 analytics APIs over ClickHouse — aggregate-only for the CUSTOMER role. There is no Postgres `usage_events` table (C-1); `customer.usage_summary` is the ClickHouse-fed display rollup. Real-time event data is not shown directly.
 - **Embed Widgets:** Widgets use the QuantumBilling Embed SDK which handles authentication via JWT. Widgets are read-only displays.
 - **Audit Logging:** All customer self-service actions (pay invoice, add payment method, etc.) are logged in the audit trail.
 

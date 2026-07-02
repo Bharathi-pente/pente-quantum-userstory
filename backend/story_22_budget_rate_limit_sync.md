@@ -1,5 +1,7 @@
 # Story 22 — Budget & Rate-Limit Synchronization
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 5 — LiteLLM Gateway Integration
 > **Depends on:** Story 20 (keys exist in LiteLLM DB), Phase 3 Story 11 (key creation with limits)
 > **Blocks:** Story 24 (deployment)
@@ -53,6 +55,16 @@ LiteLLM enforces limits inline (before forwarding to the AI provider) using `tpm
 | 16 | When a key exceeds 80% of `max_budget` (soft budget): emit a warning log and optionally trigger a webhook notification |
 | 17 | When a key exceeds `max_budget`: log an alert; LiteLLM blocks further requests automatically |
 | 18 | Alert thresholds are configurable per key (not hardcoded at 80%) |
+
+### Wallet interplay (CR-2)
+
+LiteLLM budgets (`max_budget`, `tpm_limit`, `rpm_limit`) remain the **gateway-local guardrail**. The authoritative prepaid balance is the QuantumBilling wallet — Redis `wallet:{customer_id}` (enforcement cache) backed by Postgres `billing.wallets` (system of record), per ADR-001 CR-2.
+
+| # | Criterion |
+|---|---|
+| W1 | Budget sync pushes **wallet-derived caps** to LiteLLM: when a customer's wallet balance constrains allowable spend, the derived cap flows into `max_budget`/`BudgetTable` via the same push mechanism above |
+| W2 | Enforcement precedence: **wallet zero-balance block > LiteLLM budget block**. A zero (or grace-exhausted) wallet balance blocks the request even if the LiteLLM budget still has headroom |
+| W3 | No spend write-back between stores (unchanged): LiteLLM tracks its own `spend`; the wallet burns down on the Redis hot path from ingested events. Neither writes to the other; reconciliation is nightly against ClickHouse |
 
 ---
 

@@ -1,5 +1,7 @@
 # QuantumBilling User Story: Entitlement — manage feature access, usage limits, and end-user entitlements
 
+> Aligned with ADR-001 (2026-07-01).
+
 **QB-STORY-009 · Sprint 3 · Phase: Feature**
 
 ---
@@ -30,8 +32,8 @@ Entitlements are granted per feature (`catalog.features`): e.g., `advanced_analy
 - **Grant**: ORG_ADMIN grants a feature to a customer via `POST /api/v1/entitlements/grant`
 - **Revoke**: ORG_ADMIN revokes a feature via `POST /api/v1/entitlements/revoke` (sets `expires_at = NOW()` or removes the record)
 - **Usage limits**: `customer.usage_limits` defines hard/soft limits per meter (e.g., 10,000 API calls/month)
-  - `limit_type` (from `limit_type` enum): `SOFT` (warn) | `HARD` (block) | `WARNING` (maps to `soft | hard | warning` in postgres — `NONE` in story maps to `warning`)
-  - `period` (from `limit_period` enum): `MONTHLY` | `YEARLY` | `EVER` (maps to `monthly | yearly | ever` in postgres — story uses `PER_MONTH | PER_YEAR | LIFETIME` as API values)
+  - `limit_type` (DB enum, canonical per ERD.md §2 / C-17): `SOFT` (warn) | `HARD` (block) | `WARNING` — the API layer maps explicitly; API value `NONE` maps to DB `WARNING`
+  - `period` (DB enum per ERD.md §2): `PER_MONTH` | `PER_YEAR` | `LIFETIME` — API values identical
 - **Limit overrides**: ORG_ADMIN can override a limit for a specific customer via `customer.limit_overrides`
 - **End users**: `customer.end_users` are sub-accounts under a customer; their usage is tracked in `usage_summary`
 - **Plan features**: `catalog.plan_features` links products to features with a `limit_value` (included quantity per plan)
@@ -59,12 +61,12 @@ Entitlements are granted per feature (`catalog.features`): e.g., `advanced_analy
 2. System inserts a row into `customer.entitlement_grants` with status `GRANTED`, `granted_at = NOW()`, and the provided `expires_at` (or null). Also writes to `customer.entitlement_policy_versions` as a snapshot.
 3. ORG_ADMIN can revoke a feature via `POST /api/v1/entitlements/revoke` with `{customer_id, feature_id}`. This sets `expires_at = NOW()` or deletes the record, and writes a `REVOKED` entry to `entitlement_policy_versions`.
 4. `GET /api/v1/entitlements?customer_id=:id` returns all entitlement grants for that customer, including feature name, status, `granted_at`, and `expires_at`. CUSTOMER role may call this for their own `customer_id` only.
-5. `GET /api/v1/entitlements/check?customer_id=:id&feature_id=:fid` is called by the API gateway before serving a feature-gated request. Returns `{has_access: true|false, limit_type?, limit_value?, current_usage?}`.
+5. `GET /api/v1/entitlements/check?customer_id=:id&feature_id=:fid` is called by the API gateway before serving a feature-gated request. Returns `{has_access: true|false, limit_type?, limit_value?, current_usage?}`. On the hot path this check reads **Redis, not Postgres** — the entitlement cache plus the Go engine's usage counters (<5ms enforcement path, ADR-001 §2); Postgres is consulted only to repopulate the cache.
 6. ORG_ADMIN can create a usage limit via `POST /api/v1/usage-limits` with `{product_id, meter_id, limit_type, limit_value, period}`. System validates FK references to `catalog.products` and `catalog.meters`.
 7. ORG_ADMIN can create a limit override via `POST /api/v1/usage-limits/:limitId/override` with `{customer_id, new_limit, expires_at?}`. The override is stored in `customer.limit_overrides` and takes precedence over the base `usage_limits` row for that customer.
 8. When aggregated usage in `usage_summary` reaches or exceeds a `SOFT` limit for a customer's meter, a warning notification event is emitted (to notification service). When it reaches or exceeds a `HARD` limit, the API gateway blocks the request with `429` or `403`.
 9. `GET /api/v1/usage-summary?customer_id=:id&meter_id=:mid&end_user_id?:eid` returns aggregated `total_usage` and `total_cost` for the requested billing period from `customer.usage_summary`. Supports filtering by `end_user_id` for sub-account usage.
-10. All entitlement and usage limit events (grant, revoke, override create, limit breach) are written to `audit_logs` with actor org ID, action, target customer ID, and feature/meter identifiers.
+10. All entitlement and usage limit events (grant, revoke, override create, limit breach) are written to `platform.audit_logs` (C-7) with actor org ID, action, target customer ID, and feature/meter identifiers.
 
 ---
 
@@ -156,18 +158,18 @@ Entitlements are granted per feature (`catalog.features`): e.g., `advanced_analy
 
 | Table | Schema | Operation | Key Columns |
 |-------|--------|-----------|-------------|
-| `entitlement_grants` | `customer` | INSERT · SELECT · UPDATE | `id, customer_id, feature_id, granted_at, expires_at` |
+| `entitlement_grants` | `customer` | INSERT · SELECT · UPDATE | `id, customer_id, feature_id, scope, reason, status, granted_at, expires_at` |
 | `usage_limits` | `customer` | INSERT · SELECT · UPDATE | `id, product_id, meter_id, limit_type, limit_value, period` |
 | `limit_overrides` | `customer` | INSERT · SELECT · UPDATE | `id, customer_id, meter_id, original_limit, new_limit, expires_at, status` |
 | `usage_summary` | `customer` | SELECT | `id, customer_id, end_user_id, meter_id, period_start, period_end, total_usage, total_cost` |
 | `end_users` | `customer` | INSERT · SELECT | `id, customer_id, external_user_id, email, metadata (jsonb)` |
 | `features` | `catalog` | SELECT | `id, org_id, name, category, status` |
 | `products` | `catalog` | SELECT | `id, org_id, product_name, product_code, product_type, status` |
-| `meters` | `catalog` | SELECT | `id, org_id, name, unit, status` |
+| `meters` | `catalog` | SELECT | `id, org_id, name, event_type, aggregation, status` — `event_type` + `aggregation`, **not** `unit` (C-15) |
 | `plan_features` | `catalog` | SELECT | `id, plan_id, feature_id, limit_value` |
 | `entitlement_policy_versions` | `customer` | INSERT | `id, entitlement_policy_id, org_id, version, change_type, snapshot_data, change_summary, created_by, created_at` |
 | `customers` | `customer` | SELECT | `id, org_id, name, status` |
-| `audit_logs` | `customer` | INSERT | `id, actor_id, action, target_customer_id, feature_id, meter_id, metadata, created_at` |
+| `audit_logs` | `platform` | INSERT | `id, org_id, user_id, action, resource_type, resource_id, old_value, new_value, created_at` — canonical audit table per C-7 |
 
 ---
 
@@ -218,8 +220,8 @@ USAGE < limit_value
 | `PRODUCT_NOT_FOUND` | 404 | `product_id` does not exist in `catalog.products` |
 | `METER_NOT_FOUND` | 404 | `meter_id` does not exist in `catalog.meters` |
 | `CUSTOMER_NOT_FOUND` | 404 | `customer_id` does not exist in `customer.customers` |
-| `INVALID_LIMIT_TYPE` | 422 | `limit_type` is not one of `SOFT | HARD | WARNING` (DB enum: `soft | hard | warning`) |
-| `INVALID_PERIOD` | 422 | `period` is not one of `MONTHLY | YEARLY | EVER` (DB enum: `monthly | yearly | ever`) |
+| `INVALID_LIMIT_TYPE` | 422 | API `limit_type` is not one of `SOFT | HARD | NONE` (DB enum: `SOFT | HARD | WARNING`; API `NONE` → DB `WARNING` — C-17) |
+| `INVALID_PERIOD` | 422 | `period` is not one of `PER_MONTH | PER_YEAR | LIFETIME` (DB enum identical, per ERD.md §2) |
 | `END_USER_NOT_FOUND` | 404 | `end_user_id` does not exist for the given customer |
 | `FORBIDDEN` | 403 | Actor lacks the required role for this operation |
 | `INVALID_EXPIRES_AT` | 422 | `expires_at` is set in the past |
@@ -277,15 +279,15 @@ Accessible from **Settings › End Users**. Table columns: End User ID (external
 
 - **Prisma models required**:
   - `EntitlementGrant` with enum `EntitlementStatus { GRANTED EXPIRED REVOKED }`
-  - `UsageLimit` with enums `LimitType { SOFT HARD WARNING }` (DB: `soft | hard | warning`) and `LimitPeriod { MONTHLY YEARLY EVER }` (DB: `monthly | yearly | ever`)
+  - `UsageLimit` with enums `LimitType { SOFT HARD WARNING }` and `LimitPeriod { PER_MONTH PER_YEAR LIFETIME }` — DB enums are canonical (ERD.md §2 / C-17); the API layer maps `NONE` → `WARNING` explicitly
   - `LimitOverride`
   - `UsageSummary`
   - `EndUser`
   - `EntitlementPolicyVersion` with enum `ChangeType { GRANTED REVOKED UPDATED EXPIRED }`
-- **API gateway integration**: `/entitlements/check` must be called on every feature-gated request; result should be cached in Redis with TTL of 60 seconds using key `entitlement:{customer_id}:{feature_id}`
-- **Usage aggregation**: A background job (BullMQ worker) rolls up metered events into `usage_summary` every `USAGE_SUMMARY_ROLLUP_INTERVAL_MINUTES`; recalculates `total_usage` from `usage_events` table
+- **API gateway integration**: `/entitlements/check` must be called on every feature-gated request; the **hot path reads Redis, not Postgres** — entitlement state cached under key `entitlement:{customer_id}:{feature_id}` (TTL 60 seconds, invalidated on grant/revoke) and current usage from the Go engine's Redis counters (ADR-001 §2). Postgres is read only on cache miss to repopulate
+- **Usage aggregation**: a scheduled job rolls up usage into `customer.usage_summary` every `USAGE_SUMMARY_ROLLUP_INTERVAL_MINUTES` by aggregating from ClickHouse (`events.usage_events_dedup_v`) — there is no Postgres `usage_events` table (deleted per ADR-001 §2); `usage_summary` is a display rollup, not the enforcement source
 - **Notification events**: SOFT/HARD limit breach events are published to a message queue (BullMQ `notifications` queue) for async delivery; do not block the entitlement check response
 - **Override precedence**: When checking limits, the system first looks for a `limit_overrides` row for `(customer_id, meter_id)`; if found and not expired, `new_limit` is used instead of the base `usage_limits.limit_value`
 - **SUPER_ADMIN bypass**: Guard must allow SUPER_ADMIN to perform all entitlement and usage-limit operations on any org — scope check is `actor.org_id === target.org_id || actor.role === SUPER_ADMIN`
-- **Audit logging**: Every grant, revoke, override create, and limit breach must produce an `audit_logs` entry with `actor_id`, `action`, `target_customer_id`, `feature_id` (if applicable), and `meter_id` (if applicable)
+- **Audit logging**: Every grant, revoke, override create, and limit breach must produce a `platform.audit_logs` entry (canonical audit table per C-7) with `user_id`, `action`, `resource_type`/`resource_id` (customer, feature, or meter), and `old_value`/`new_value`
 - **Plan features enforcement**: When a customer is provisioned on a product, the system should auto-create `usage_limits` rows from the product's associated `plan_features` entries (via `catalog.plan_features`) — `limit_value` from the plan_feature row becomes the `limit_value` on the usage_limit

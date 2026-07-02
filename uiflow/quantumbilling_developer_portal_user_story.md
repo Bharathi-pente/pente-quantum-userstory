@@ -1,5 +1,7 @@
 # QuantumBilling User Story: Developer Portal — Virtual Keys & BYOK
 
+> Aligned with ADR-001 (2026-07-01).
+
 ## QB-STORY-014 · Sprint 3 · Phase: Feature
 
 ---
@@ -24,7 +26,7 @@
 
 ### What are Virtual Keys?
 
-Virtual keys allow QuantumBilling customers (orgs) to use their own API provider credentials while still having QuantumBilling manage usage tracking, rate limiting, and billing. When a customer uses their OpenAI key through QuantumBilling, the system:
+Virtual keys allow QuantumBilling organizations (orgs) to use their own API provider credentials while still having QuantumBilling manage usage tracking, rate limiting, and billing. When an org uses their OpenAI key through QuantumBilling, the system:
 
 1. Maps their internal API key to the provider's actual key via `developer.virtual_key_mappings`
 2. Forwards the request to the provider using the mapped key
@@ -33,7 +35,7 @@ Virtual keys allow QuantumBilling customers (orgs) to use their own API provider
 
 ### What is BYOK?
 
-BYOK (Bring Your Own Key) allows organizations to store and manage their own encryption keys or API keys for third-party providers. Keys are stored securely in `security.byok_provider_keys` and are referenced by virtual key mappings.
+BYOK (Bring Your Own Key) allows organizations to store and manage their own encryption keys or API keys for third-party providers. Keys are stored securely in `security.byok_provider_keys` (AES-256-GCM; in production the data-encryption key is wrapped via KMS envelope encryption per ADR-001 §7) and are referenced by virtual key mappings.
 
 **Key capabilities:**
 - **Virtual Key Creation**: ORG_ADMIN or DEVELOPER creates a virtual key mapping linking a QuantumBilling API key to an external provider key
@@ -62,11 +64,11 @@ BYOK (Bring Your Own Key) allows organizations to store and manage their own enc
 
 ### Virtual Key Mappings
 
-1. ORG_ADMIN or DEVELOPER can create a virtual key mapping via `POST /api/v1/virtual-keys` linking a QuantumBilling `api_key_id` to a `provider_key_id` (from `security.byok_provider_keys`), with `provider` and optional `key_alias`. The `provider_key_id` is **optional** — a mapping can be created without a BYOK key linked yet (for pre-provisioning).
+1. ORG_ADMIN or DEVELOPER can create a virtual key mapping via `POST /api/v1/virtual-keys` linking a QuantumBilling `virtual_key_id` (= `developer.api_keys.id`) to a `provider_key_id` (from `security.byok_provider_keys`), with `provider` and optional `key_alias`. The `provider_key_id` is **optional** — a mapping can be created without a BYOK key linked yet (for pre-provisioning).
 2. Virtual key mappings are scoped to `org_id` — keys from one org cannot be mapped to another org's BYOK keys.
-3. `GET /api/v1/virtual-keys` lists all virtual key mappings for the org with pagination (default 20/page), filterable by `provider`, `api_key_id`, and `status`.
+3. `GET /api/v1/virtual-keys` lists all virtual key mappings for the org with pagination (default 20/page), filterable by `provider`, `virtual_key_id`, and `status`.
 4. `GET /api/v1/virtual-keys/:virtualKeyId` returns full mapping details including provider name, key alias, status, and linked API key info. If `provider_key_id` is NULL, returns `provider_key_linked: false`.
-5. `PATCH /api/v1/virtual-keys/:virtualKeyId` allows updating `provider_key_id` (to link a BYOK key), `key_alias`, and `status`. Cannot change `api_key_id` after creation.
+5. `PATCH /api/v1/virtual-keys/:virtualKeyId` allows updating `provider_key_id` (to link a BYOK key), `key_alias`, and `status`. Cannot change `virtual_key_id` after creation.
 6. `DELETE /api/v1/virtual-keys/:virtualKeyId` performs a soft-delete — sets `status = inactive`. The mapping record is retained for audit.
 7. A virtual key mapping is **active** when: `status = active` AND `provider_key_id IS NOT NULL` AND `provider_key.status = active`. If `provider_key_id` is NULL, the mapping is in a pre-provisioned state (not usable for routing).
 8. SUPER_ADMIN can perform all CRUD operations on virtual key mappings for any org.
@@ -85,7 +87,7 @@ BYOK (Bring Your Own Key) allows organizations to store and manage their own enc
 ### Provider Integration
 
 17. When a request comes in with a QuantumBilling API key that has an active virtual key mapping, the gateway/service middleware:
-    a. Looks up `developer.virtual_key_mappings` by `api_key_id`
+    a. Looks up `developer.virtual_key_mappings` by `virtual_key_id`
     b. Checks `status = active` AND `provider_key_id IS NOT NULL` — if `provider_key_id` is NULL, the mapping is pre-provisioned but not yet linked to a BYOK key, so skip to normal routing
     c. Retrieves `provider_key_id` and `provider` from the mapping
     d. Looks up `key_reference` from `security.byok_provider_keys` by `provider_key_id`
@@ -110,14 +112,14 @@ BYOK (Bring Your Own Key) allows organizations to store and manage their own enc
 **Given:** Authenticated ORG_ADMIN for org `acme`
 **When:** `POST /api/v1/byok-keys` with `{ "provider": "openai", "key_alias": "Acme OpenAI Production", "key_reference": "sk-acme-prod-123", "status": "active" }`
 **Then:** 201 returned; `security.byok_provider_keys` row created with `org_id = acme`, `status = active`
-**When:** `POST /api/v1/virtual-keys` with `{ "api_key_id": "ak_acme_001", "provider_key_id": "<byok_key_id>", "provider": "openai", "key_alias": "Production Key Mapping", "status": "active" }`
+**When:** `POST /api/v1/virtual-keys` with `{ "virtual_key_id": "ak_acme_001", "provider_key_id": "<byok_key_id>", "provider": "openai", "key_alias": "Production Key Mapping", "status": "active" }`
 **Then:** 201 returned; `developer.virtual_key_mappings` row created
 
 ---
 
 ### TC-02 — Happy path: Virtual key lookup during request
 
-**Given:** Org `acme` has active virtual key mapping: `api_key_id = ak_acme_001`, `provider_key_id = byok_openai_001`, `provider = openai`
+**Given:** Org `acme` has active virtual key mapping: `virtual_key_id = ak_acme_001`, `provider_key_id = byok_openai_001`, `provider = openai`
 **When:** API gateway receives request with `X-API-Key: ak_acme_001`
 **Then:** Gateway looks up mapping → retrieves OpenAI key reference from `security.byok_provider_keys` → forwards request to OpenAI with correct credentials → usage recorded against `ak_acme_001`
 
@@ -156,7 +158,7 @@ BYOK (Bring Your Own Key) allows organizations to store and manage their own enc
 ### TC-06 — Negative: Cannot map key from another org
 
 **Given:** ORG_ADMIN for org `acme`; BYOK key `byok_other` belongs to org `globex`
-**When:** `POST /api/v1/virtual-keys` with `{ "api_key_id": "ak_acme_001", "provider_key_id": "byok_other", "provider": "openai" }`
+**When:** `POST /api/v1/virtual-keys` with `{ "virtual_key_id": "ak_acme_001", "provider_key_id": "byok_other", "provider": "openai" }`
 **Then:** 403 `ORG_MISMATCH` — cannot create cross-org virtual key mapping
 
 ---
@@ -199,8 +201,8 @@ BYOK (Bring Your Own Key) allows organizations to store and manage their own enc
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
-| `POST` | `/api/v1/virtual-keys` | Create a virtual key mapping | JWT · Guard: `OrgAdminGuard` or `DeveloperGuard` · Body: `{api_key_id, provider_key_id, provider, key_alias?, status?}` |
-| `GET` | `/api/v1/virtual-keys` | List virtual key mappings for org | JWT · Guard: `OrgAdminGuard` or `DeveloperGuard` · Query: `?provider=&api_key_id=&status=&page=1&limit=20` |
+| `POST` | `/api/v1/virtual-keys` | Create a virtual key mapping | JWT · Guard: `OrgAdminGuard` or `DeveloperGuard` · Body: `{virtual_key_id, provider_key_id, provider, key_alias?, status?}` |
+| `GET` | `/api/v1/virtual-keys` | List virtual key mappings for org | JWT · Guard: `OrgAdminGuard` or `DeveloperGuard` · Query: `?provider=&virtual_key_id=&status=&page=1&limit=20` |
 | `GET` | `/api/v1/virtual-keys/:virtualKeyId` | Get virtual key mapping details | JWT · Guard: `OrgAdminGuard` or `DeveloperGuard` |
 | `PATCH` | `/api/v1/virtual-keys/:virtualKeyId` | Update mapping alias or status | JWT · Guard: `OrgAdminGuard` or `DeveloperGuard` · Body: `{key_alias?, status?}` |
 | `DELETE` | `/api/v1/virtual-keys/:virtualKeyId` | Soft-delete a virtual key mapping | JWT · Guard: `OrgAdminGuard` or `DeveloperGuard` |
@@ -230,12 +232,33 @@ BYOK (Bring Your Own Key) allows organizations to store and manage their own enc
 |-------|--------|-----------|-------------|
 | `virtual_key_mappings` | `developer` | INSERT · SELECT · UPDATE · DELETE | `id, virtual_key_id, provider_key_id, org_id, provider, key_alias, status` |
 | `byok_provider_keys` | `security` | INSERT · SELECT · UPDATE · DELETE | `id, org_id, provider, key_alias, key_reference, status` |
-| `api_keys` | `developer` | SELECT | `id, org_id, name, key_prefix, status` |
+| `api_keys` | `developer` | SELECT | `id, org_id, customer_id, end_user_id, name, key_hash, key_prefix, source_mode, budget_limit_usd, rate_limit_rpm, rate_limit_tpm, allowed_models, status, revoked_at` |
 | `identity.organizations` | `identity` | SELECT | `id, name` |
 | `identity.users` | `identity` | SELECT | `id, org_id` |
 | `audit.security_audit_logs` | `audit` | INSERT | `id, actor_id, action, resource_id, org_id, metadata, created_at` |
 
 ### Table Schemas (Source of Truth)
+
+**`developer.api_keys`** — canonical schema is `developer` (conflict C-3); the backend key DDL is merged into this one table per ERD §5.
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID | PK |
+| `org_id` | UUID | FK → `identity.organizations.id` |
+| `customer_id` | UUID | FK → `customer.customers.id` (ADR-001 §2.1 vocabulary) |
+| `end_user_id` | UUID | FK → `customer.end_users.id` (nullable — self-serve keys) |
+| `name` | TEXT | Human-readable key name |
+| `key_hash` | TEXT | SHA-256 of raw key; = LiteLLM `VerificationToken.token` |
+| `key_prefix` | TEXT | `sk-live-xxx` (11 chars) for display |
+| `source_mode` | TEXT | `direct_ingest` / `virtual_key` / `byok` |
+| `budget_limit_usd` | NUMERIC | Per-key budget cap |
+| `rate_limit_rpm` | INT | Requests/minute limit |
+| `rate_limit_tpm` | INT | Tokens/minute limit |
+| `allowed_models` | JSONB | Model allowlist (`['*']` if unrestricted) |
+| `status` | TEXT | `active` / `revoked` / `expired` |
+| `last_used_at` | TIMESTAMPTZ | |
+| `expires_at` | TIMESTAMPTZ | Nullable |
+| `revoked_at` | TIMESTAMPTZ | Nullable |
+| `created_at` | TIMESTAMPTZ | |
 
 **`developer.virtual_key_mappings`**
 | Column | Type | Notes |
@@ -305,7 +328,7 @@ active
 | `VIRTUAL_KEY_INACTIVE` | 409 | Virtual key mapping or linked BYOK key is inactive |
 | `BYOK_KEY_IN_USE` | 409 | Attempt to delete BYOK key that is referenced by an active virtual key mapping |
 | `ORG_MISMATCH` | 403 | Virtual key mapping or BYOK key belongs to a different org |
-| `DUPLICATE_VIRTUAL_KEY` | 409 | An active virtual key mapping already exists for this `api_key_id + provider` combination |
+| `DUPLICATE_VIRTUAL_KEY` | 409 | An active virtual key mapping already exists for this `virtual_key_id + provider` combination |
 | `INVALID_PROVIDER` | 400 | `provider` is not one of: `openai`, `anthropic`, `google`, `aws`, `azure`, `custom` |
 | `KEY_REFERENCE_REQUIRED` | 422 | `key_reference` is required when creating a BYOK key |
 | `CANNOT_REACTIVATE_IN_USE_KEY` | 409 | Cannot reactivate a BYOK key that is still in use by a virtual mapping |
@@ -402,8 +425,8 @@ QuantumBilling API Key (developer.api_keys)
 ### Gateway Integration
 
 - When a request arrives with `X-API-Key` header, the gateway:
-  1. Looks up `api_key_id` in `developer.api_keys`
-  2. Checks for an active virtual key mapping in `developer.virtual_key_mappings`
+  1. Hashes the presented key (SHA-256) and looks it up in `developer.api_keys` by `key_hash`, resolving the `virtual_key_id` (= `developer.api_keys.id`)
+  2. Checks for an active virtual key mapping in `developer.virtual_key_mappings` by `virtual_key_id`
   3. If found, retrieves `provider_key_id` and `provider`
   4. Looks up `key_reference` from `security.byok_provider_keys`
   5. Forwards request to actual provider using mapped credentials
@@ -411,7 +434,7 @@ QuantumBilling API Key (developer.api_keys)
 
 ### Security Model
 
-- **BYOK key material**: QuantumBilling NEVER stores raw API keys. Only `key_reference` (the provider's key identifier or an encrypted reference) is stored.
+- **BYOK key material**: QuantumBilling NEVER stores raw API keys. Only `key_reference` (the provider's key identifier or an encrypted reference) is stored. Where an encrypted reference is held (`encrypted_key`, AES-256-GCM with a unique 12-byte `key_iv`), the data-encryption key MUST be wrapped via KMS/Vault envelope encryption in production (ADR-001 §7) — a raw env-var master key with a local fallback is acceptable for development only.
 - **Key hashing**: Before storing a key reference, hash it with `KEY_REFERENCE_HASH_ALGO` (default SHA-256) and store the hash in `key_hash` for deduplication. Never store the raw reference in logs.
 - **Provider validation**: When `provider = custom`, the `key_reference` should be a URL or identifier that the gateway uses to route requests to the customer's custom endpoint.
 - **Audit**: Every create/update/delete on `virtual_key_mappings` and `security.byok_provider_keys` must write to `audit.security_audit_logs`. Mask `key_reference` in logs — log only `key_hash` for correlation.
@@ -477,9 +500,15 @@ enum virtual_key_status {
 }
 ```
 
+### LiteLLM Key Sync (backend story_20)
+
+- Provisioning a key in `developer.api_keys` also provisions a LiteLLM `VerificationToken`: `VerificationToken.token` = `key_hash` (same SHA-256), with `metadata` carrying `{source_mode, org_id, customer_id, key_id}` and, for BYOK routing, the encrypted provider-key reference.
+- `budget_limit_usd`, `rate_limit_rpm`/`rate_limit_tpm`, and `allowed_models` map to LiteLLM `max_budget`, `rpm_limit`/`tpm_limit`, and `models` respectively.
+- Revoking a key sets `status = revoked` + `revoked_at` in `developer.api_keys` and `blocked = true` on the LiteLLM token. See backend story_20 for the sync contract.
+
 ### Cache Invalidation
 
-- Virtual key mappings should be cached in Redis with key `vk:{api_key_id}` and TTL `VIRTUAL_KEY_LOOKUP_CACHE_TTL_SEC`.
+- Virtual key mappings should be cached in Redis with key `vk:{virtual_key_id}` and TTL `VIRTUAL_KEY_LOOKUP_CACHE_TTL_SEC`.
 - When a virtual key mapping or BYOK key is updated/deleted, publish an invalidation event to Redis pub/sub so all gateway instances refresh immediately.
 
 ### RBAC Notes

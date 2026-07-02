@@ -1,5 +1,7 @@
 # QuantumBilling User Story: AI Recommendations — Intelligent suggestions to optimize revenue and reduce churn
 
+> Aligned with ADR-001 (2026-07-01).
+
 ---
 
 ## Story ID & Sprint
@@ -272,20 +274,22 @@ Based on `analytics.ai_recommendations`, `analytics.churn_risk_scores`, `analyti
 
 | Table | Schema | Operation | Key Columns |
 |-------|--------|-----------|-------------|
-| `analytics.ai_recommendations` | billing | INSERT · SELECT · UPDATE | `id, org_id, customer_id, recommendation_type, priority, summary, detail, suggested_action, potential_impact, metadata, status, created_at, expires_at` |
-| `analytics.churn_risk_scores` | billing | INSERT · SELECT · UPDATE | `id, customer_id, org_id, score, risk_band, contributing_factors, computed_at` |
-| `analytics.revenue_insights` | billing | INSERT · SELECT | `id, org_id, current_mrr, prior_mrr, arr, nrr, grr, growth_rate_pct, revenue_anomalies, computed_at` |
-| `analytics.ai_recommendation_events` | billing | INSERT | `id, recommendation_id, org_id, actor_id, event_type, action_note, created_at` |
-| `analytics.ai_org_settings` | billing | INSERT · SELECT · UPDATE | `id, org_id, enabled_types, refresh_interval_minutes, updated_at` |
+| `analytics.ai_recommendations` | analytics | INSERT · SELECT · UPDATE | `id, org_id, customer_id, recommendation_type, priority, summary, detail, suggested_action, potential_impact, metadata, status, created_at, expires_at` |
+| `analytics.churn_risk_scores` | analytics | INSERT · SELECT · UPDATE | `id, customer_id, org_id, score, risk_band, contributing_factors, computed_at` |
+| `analytics.revenue_insights` | analytics | INSERT · SELECT | `id, org_id, current_mrr, prior_mrr, arr, nrr, grr, growth_rate_pct, revenue_anomalies, computed_at` |
+| `analytics.ai_recommendation_events` | analytics | INSERT | `id, recommendation_id, org_id, actor_id, event_type, action_note, created_at` |
+| `analytics.ai_org_settings` | analytics | INSERT · SELECT · UPDATE | `id, org_id, enabled_types, refresh_interval_minutes, updated_at` |
 | `customer.customers` | customer | SELECT | `id, org_id, name, email, status, created_at` |
 | `customer.subscriptions` | customer | SELECT | `id, customer_id, status, current_period_end, billing_period_start` |
-| `billing.invoices` | billing | SELECT | `id, customer_id, org_id, status, amount, due_date` |
+| `billing.invoices` | billing | SELECT | `id, customer_id, org_id, status, total, due_date` |
 | `billing.payments` | billing | SELECT | `id, customer_id, invoice_id, status, failure_reason, created_at` |
-| `billing.credits` | billing | SELECT | `id, customer_id, remaining_balance` |
+| `billing.credits` | billing | SELECT | `id, customer_id, remaining_amount` |
 | `catalog.meters` | catalog | SELECT | `id, org_id, name, event_type` |
 | `catalog.pricing_models` | catalog | SELECT | `id, org_id, meter_id, pricing_type, status` |
 | `identity.organizations` | identity | SELECT | `id, name, status` |
-| `audit_logs` | audit | INSERT | `id, actor_id, action, org_id, metadata, created_at` |
+| `platform.audit_logs` | platform | INSERT | `id, user_id, action, org_id, resource_type, resource_id, created_at` |
+
+> Usage-derived signals (usage decline, tier-cap proximity, per-meter consumption) are **not** read from Postgres — there is no `usage_events` table (ADR-001 §2). They come from the Go phase-4 analytics APIs over ClickHouse `events.usage_events_dedup_v`.
 
 ---
 
@@ -465,7 +469,7 @@ CTA: "Save settings". On success: toast "AI settings updated".
 
 ## Dependencies & Notes for Agent
 
-- **Recommendation generation**: The AI engine reads from `billing.invoices`, `billing.payments`, `billing.credits`, `catalog.meters`, `catalog.pricing_models`, and `customer.subscriptions` to score customers and generate recommendations. No LLM call is required at generation time — recommendations are rule-based + threshold scoring computed in batch.
+- **Recommendation generation**: The AI engine reads billing/payment/credit signals from `billing.invoices`, `billing.payments`, `billing.credits` and catalog/subscription context from `catalog.meters`, `catalog.pricing_models`, `customer.subscriptions`. **Usage-derived signals** (usage decline, tier-cap proximity, multi-meter consumption for upsell) are fetched from the Go phase-4 analytics APIs backed by ClickHouse — never from a Postgres usage table (ADR-001 §2). No LLM call is required at generation time — recommendations are rule-based + threshold scoring computed in batch.
 - **LLM enrichment (optional future)**: In a later phase, recommendation `detail` and `suggested_action` could be auto-generated via LLM call using the structured metadata as context. Store the LLM-generated text in `metadata.llm_enriched_text`.
 - **Prisma models**:
   - `AIRecommendation` with enum `RecommendationType { CHURN_RISK PAYMENT_FAILURE_RISK PRICING_UPGRADE TIER_OPTIMIZATION REVENUE_ANOMALY DUNNING_OPTIMIZATION UPSELL_OPPORTUNITY CREDIT_EXPIRY }`
@@ -475,9 +479,9 @@ CTA: "Save settings". On success: toast "AI settings updated".
   - `AIOrgSettings`
   - `AIRecommendationEvent` with enum `RecommendationEventType { VIEWED ACTIONED DISMISSED }`
 - **BullMQ job queue**: Use `ai-recommendation-refresh` and `ai-churn-score-compute` queues for scheduled generation. Idempotency: use `org_id + run_id` dedup key.
-- **Churn score computation**: Query payment failures, usage trends, invoice overdue history, and subscription metadata. Score = weighted sum of factor scores. Store result in `analytics.churn_risk_scores` with `UPSERT`.
-- **Revenue insights computation**: Aggregate from `billing.invoices` (paid amount per period) and `billing.payments`. Compute MRR, ARR, NRR, GRR. Detect anomalies via z-score deviation > 2σ from rolling 90-day average.
-- **Audit logging**: All recommendation events (viewed, actioned, dismissed) and all AI settings changes must be written to `audit_logs`.
+- **Churn score computation**: Query payment failures, invoice overdue history, and subscription metadata from Postgres; query usage trends (30/60-day deltas) via the phase-4 analytics APIs / ClickHouse rollups. Score = weighted sum of factor scores. Store result in `analytics.churn_risk_scores` with `UPSERT`.
+- **Revenue insights computation**: Aggregate from `billing.invoices` (paid `total` per period) and `billing.payments`. Compute MRR, ARR, NRR, GRR. Detect anomalies via z-score deviation > 2σ from rolling 90-day average.
+- **Audit logging**: All recommendation events (viewed, actioned, dismissed) and all AI settings changes must be written to `platform.audit_logs` (C-7).
 - **RBAC guards**:
   - `OrgAdminGuard`: allows `ORG_ADMIN` and `SUPER_ADMIN`
   - `END_USER`: always denied at guard level

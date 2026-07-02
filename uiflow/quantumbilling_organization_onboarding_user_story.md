@@ -1,5 +1,7 @@
 # QuantumBilling User Story: Organization Onboarding
 
+> Aligned with ADR-001 (2026-07-01).
+
 **QB-STORY-029** · Sprint 1 · Phase: Foundation
 
 ---
@@ -27,7 +29,7 @@ The Organization Onboarding flow covers:
 - **Organization Creation** — create the organization record
 - **Initial Setup** — configure billing settings, payment terms, currency
 - **ORG_ADMIN Assignment** — assign an initial organization administrator
-- **Organization Status** — manage organization active/trial/suspended states
+- **Organization Status** — manage the org lifecycle (`ACTIVE | SUSPENDED | DELETED` per ERD.md §1, conflict C-14). Trial state is **not** an org status — trials live on subscriptions (`customer.subscriptions.status = 'trialing'`, CR-14)
 
 ---
 
@@ -36,9 +38,12 @@ The Organization Onboarding flow covers:
 ```
 Organization (created here)
     └── Created by: SUPER_ADMIN
-    └── Has: name, billing_email, billing_address, currency, payment_terms
-    └── Status: trial → active → suspended → canceled
+    └── Has: name, billing_email, currency, country, industry, timezone (identity.organizations per ERD.md §1)
+    └── Status: ACTIVE → SUSPENDED → (reactivated) ACTIVE, or SUSPENDED → DELETED
+    └── Trial: represented by a subscription with status `trialing` (CR-14), never by an org status
 ```
+
+> **Field note (per ERD.md):** `identity.organizations` carries `name, billing_email, currency, country, industry, timezone, status, suspended_at`. The extra intake fields collected during onboarding — `billing_address`, `phone`, `website`, `payment_terms` — are customer/org profile fields per ERD.md (`billing_address` lives on `customer.customers`; phone/website/payment_terms are profile-level configuration, not `identity.organizations` columns).
 
 ---
 
@@ -48,9 +53,9 @@ Organization (created here)
 
 1. SUPER_ADMIN can create a new organization via UI or API.
 2. Required fields: Name, Billing Email.
-3. Optional fields: Billing Address, Phone, Website, Currency, Payment Terms.
+3. Optional fields: Billing Address, Phone, Website, Currency, Payment Terms (customer/org profile fields per ERD.md — see field note above).
 4. Organization is assigned a unique `organization_id`.
-5. Organization status defaults to `trial`.
+5. Organization status defaults to `ACTIVE` (C-14 resolved). If the org starts on a free trial, that is modeled as a subscription with status `trialing` (CR-14) — not as an org status.
 
 ### Organization Settings
 
@@ -70,30 +75,31 @@ Organization (created here)
 
 ### Organization Status Flow
 
+Org status is `ACTIVE | SUSPENDED | DELETED` (`identity.organizations.status` + `suspended_at`, per ERD.md §1 / C-14 resolved). The former `trial/active/suspended/canceled` org-status set is dropped: trials and cancellation are subscription-level states (`customer.subscriptions.status`: `trialing`, `canceled`, etc.).
+
 ```
-trial (default on creation)
+ACTIVE (default on creation)
     │
-    │ trial_period_end OR subscription_assigned
+    │ payment_failed escalation OR manual_suspend  (sets suspended_at)
     ▼
-active
-    │
-    │ payment_failed (past_due → suspended) OR manual_suspend
-    ▼
-suspended
+SUSPENDED
     │
     │ payment_resumed OR manual_reactivate
     ▼
-active
+ACTIVE
 
-    │
-    │ manual_cancel OR max_suspension_reached
-    ▼
-canceled
+SUSPENDED ── grace period elapses + hard delete ──▶ DELETED
 ```
 
-12. Trial period is configurable (default: 14 days).
-13. During trial, organization has limited access.
-14. Trial expiration blocks API access until subscription is assigned.
+In parallel, the subscription lifecycle carries the trial:
+
+```
+trialing ── trial_end reached OR converted ──▶ active ──▶ past_due / suspended / canceled / ended
+```
+
+12. Trial period is configurable per plan (`catalog.plans.trial_days`, default: 14 days — CR-14); the subscription's `trial_end` marks expiry.
+13. During trial (subscription status `trialing`), the organization has limited access.
+14. Trial expiration blocks API access until an active (paid) subscription exists — the org itself stays `ACTIVE`.
 
 ### Organization List (SUPER_ADMIN)
 
@@ -111,9 +117,9 @@ canceled
 | `GET` | `/api/v1/organizations/:orgId` | Get organization details |
 | `PUT` | `/api/v1/organizations/:orgId` | Update organization |
 | `POST` | `/api/v1/organizations/:orgId/invite-admin` | Invite ORG_ADMIN |
-| `POST` | `/api/v1/organizations/:orgId/suspend` | Suspend organization |
-| `POST` | `/api/v1/organizations/:orgId/reactivate` | Reactivate organization |
-| `POST` | `/api/v1/organizations/:orgId/cancel` | Cancel organization |
+| `POST` | `/api/v1/organizations/:orgId/suspend` | Suspend organization (`status = SUSPENDED`, stamps `suspended_at`) |
+| `POST` | `/api/v1/organizations/:orgId/reactivate` | Reactivate organization (`status = ACTIVE`) |
+| `DELETE` | `/api/v1/organizations/:orgId` | Delete organization (`SUSPENDED → DELETED` after grace period; subscription cancellation is a subscription-level operation) |
 | `GET` | `/api/v1/platform/organizations` | List all organizations (SuperAdmin) |
 
 ---
@@ -124,7 +130,8 @@ canceled
 
 **Given:** SUPER_ADMIN
 **When:** creating a new organization with name "Acme AI" and billing email "billing@acme.ai"
-**Then:** organization is created with status "trial" and unique org_id
+**Then:** organization is created with status `ACTIVE` and unique org_id
+**And:** if a trial plan is assigned, a subscription with status `trialing` is created (CR-14)
 
 ### TC-02 — Invite ORG_ADMIN
 
@@ -145,4 +152,4 @@ canceled
 
 - Requires: SUPER_ADMIN role
 - Triggers: Webhook `organization.created`
-- Audit log: organization creation logged
+- Audit log: organization creation logged to `platform.audit_logs` (C-7)
