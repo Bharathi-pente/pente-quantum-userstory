@@ -199,6 +199,13 @@ services:
       - "${KAFKA_UI_PORT:-8085}:8080"
     networks:
       - event-engine-net
+    healthcheck:
+      # Kafka UI is a Spring Boot app; prefer its actuator health endpoint.
+      test: ["CMD-SHELL", "(command -v wget >/dev/null 2>&1 && wget -qO- http://localhost:8080/actuator/health || command -v curl >/dev/null 2>&1 && curl -fsS http://localhost:8080/actuator/health || command -v python3 >/dev/null 2>&1 && python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/actuator/health')\") | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
   # ---------------------------------------------------------------------------
   # ClickHouse — usage source of truth (events.usage_events + dedup view).
@@ -246,6 +253,7 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
       KC_HTTP_PORT: "8080"
+      KC_HEALTH_ENABLED: "true"
     ports:
       - "${KEYCLOAK_HOST_PORT:-8080}:8080"
     volumes:

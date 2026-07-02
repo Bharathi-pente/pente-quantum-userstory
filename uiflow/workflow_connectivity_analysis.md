@@ -207,7 +207,7 @@ Auth: Keycloak JWT validated at the NestJS BFF, which derives `org_id`/`customer
    USAGE           per-meter aggregation × rate (§3.3 waterfall:
                    contract_rate → pinned rate_card_version → pricing_model → UNRATED-flagged)
    OVERAGE         max(0, usage − included units) × overage rate
-   COMMIT_TRUE_UP  max(0, commit − period spend)
+   COMMIT_TRUE_UP  max(0, commit_amount − eligible spend over the contract term); eligible spend is USAGE + OVERAGE only; emitted only on the final invoice of the contract term
 
 3. Credits applied automatically — FEFO within priority
    └── QB-STORY-025: Credits Management

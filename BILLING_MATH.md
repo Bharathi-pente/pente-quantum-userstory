@@ -20,7 +20,11 @@ Quarterly/yearly periods apply the same clamp (Feb 29 yearly anchor → Feb 28 i
 
 **T-4. Period boundaries are half-open:** `[period_start, period_end)` at millisecond precision. `period_end == next period_start`. An event with `timestamp_ms` exactly at the boundary belongs to the **later** period.
 
-**T-5. Grace and finalization.** Invoice generated as `draft` at `period_end + GRACE_HOURS` (default 36h, env-configurable 24–48). Finalize (draft→pending) is the point of: tax calculation, credit application, auto-collection trigger, and immutability. Events arriving `[period_end, finalize)` are included; after finalize they route to re-rating.
+**T-5. Grace and finalization.**
+- **At `period_end`:** open/generate the `draft` invoice from events with `timestamp_ms` in `[period_start, period_end)`.
+- **During the grace window `[period_end, period_end + INVOICE_GRACE_HOURS)`** (default 36h, env-configurable 24–48): late arrivals carrying an in-period `timestamp_ms` update the still-`draft` invoice.
+- **At grace expiry:** finalize (`draft`→`pending`). This is the single point of: tax calculation, credit application, auto-collection trigger, and immutability.
+- **After finalization:** late or corrected events never mutate the issued invoice — they route to re-rating (story_26) / credit notes.
 
 **T-6. Time is an input.** No billing code calls wall-clock directly; time comes from `BillingClock.Now(org_id)` (story_33), which resolves to the test clock for sandbox orgs. This is what makes CR-12 work.
 
@@ -72,7 +76,7 @@ No second-based proration — day granularity matches customer intuition and inv
 ```
 true_up = max(0, commit_amount − Σ eligible_spend_over_term)
 ```
-where `eligible_spend` = subtotal of USAGE + OVERAGE lines (base fees count toward commit only if `contract.commit_includes_base = true`; default false). The true-up posts as one COMMIT_TRUE_UP line and consumes commit-type credits (priority 3) first by definition.
+where `eligible_spend` = subtotal of USAGE + OVERAGE lines only. Base fees are **excluded** from commit-eligible spend in v1.2 because the contract schema has no opt-in flag for including base fees. The true-up posts as one COMMIT_TRUE_UP line on the final invoice of the term; general FEFO credit application (§7) then applies to that invoice as a whole — commit-type credits remain priority 3 (lowest), with no special priority override.
 
 **C-4. Renewal:** `auto_renew=true` starts a fresh commit window; unspent commit never rolls over.
 
@@ -125,7 +129,7 @@ An implementation that reproduces these numbers exactly (including the $3.00 lin
 
 | Env | Default | Rule |
 |---|---|---|
-| `GRACE_HOURS` | 36 | T-5 |
+| `INVOICE_GRACE_HOURS` | 36 | T-5 |
 | `RATING_CACHE_REFRESH_SECONDS` | 60 | W-2 |
 | `WALLET_DRIFT_ALERT_THRESHOLD` | 0.01 | W-4 |
 | `WALLET_MAX_OVERDRAFT` | 1.00 | W-5 |

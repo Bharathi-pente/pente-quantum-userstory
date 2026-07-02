@@ -639,7 +639,8 @@ DELIVERABLES (engine/internal/invoice + billing-worker wiring)
    line types BASE_FEE/USAGE/OVERAGE/COMMIT_TRUE_UP/SEAT/ADJUSTMENT with rate_source/
    rate_source_id; commit progress annotation (§4); rounding per §2 (half-up, once per
    line); input snapshots (rate_card_version_id, plan_version_id, aggregation_watermark)
-   stored on the invoice; draft → grace (GRACE_HOURS) → finalize (pending); tax via the
+   stored on the invoice; draft opens at period end, grace window is
+   INVOICE_GRACE_HOURS, then finalize (pending); tax via the
    provider interface with internal tax_regions fallback (CR-7 — pluggable, internal
    impl only this unit); billing-group consolidation seam (full impl D-17).
 3. BFF read endpoints per openapi/bff-core.yaml (invoices list/get/lines) + web invoice
@@ -656,8 +657,9 @@ endpoints + web invoice pages).
 
 DONE CRITERIA (Milestone M4):
 - Golden test green.
-- Advance a sandbox org one full month → draft invoice at period end + grace →
-  finalizes to pending; totals match a hand-computed fixture.
+- Advance a sandbox org one full month → draft invoice opens at period end →
+  in-period late arrivals update it during INVOICE_GRACE_HOURS → finalizes to
+  pending at grace expiry; totals match a hand-computed fixture.
 - Jan-31 anchor: February invoice covers Jan31→Feb28 exactly (clamp test).
 - Late event inside grace lands on the draft; after finalize it does NOT mutate the
   invoice (routes to the D-15 seam — assert invoice unchanged).

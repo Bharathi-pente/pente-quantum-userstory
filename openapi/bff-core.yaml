@@ -1,14 +1,14 @@
 openapi: 3.1.0
 info:
   title: QuantumBilling BFF — Core Control-Plane & Billing API
-  version: 0.1.0
+  version: 1.2.0
   description: |
-    NestJS BFF (control plane) API for QuantumBilling, per ADR-001 and the uiflow
-    user stories. This spec covers the **core surface** on the BUILD_PLAN critical
-    path only — Phase CP (orgs, customers, end users, meters/facade) plus Track C
-    money flows (catalog: products/plans/pricing-models/rate-cards/contracts;
-    subscriptions; invoice presentment & pay; payments & payment methods; credits
-    & prepaid wallet) and the two dashboard usage proxies.
+    NestJS BFF (control plane) API for QuantumBilling, per ADR-001, DISPATCH v1.2,
+    and the uiflow user stories. This spec is the **v1.2 BFF contract** for core
+    control plane, Track C billing/money flows, dashboard usage proxies, and the
+    post-core control-plane surfaces used by reporting, alerts, webhooks, AI,
+    audit/compliance, entitlements, rate-limiting, dunning, simulations, exports,
+    customer/developer portals, tax/currency, and revenue operations.
 
     Architecture (ADR-001 §2):
     - The NestJS layer is a control plane + BFF. It stores **no raw usage events**;
@@ -38,11 +38,13 @@ info:
     `ACTIVE|SUSPENDED|DELETED` (C-14); subscription status is lowercase (C-12);
     credits use `remaining_amount` (C-18).
 
-    **Scope note:** reporting, alerts, webhooks, AI chatbot/recommendations,
-    audit/compliance, entitlement, rate-limiting, dunning-config and other
-    Phase Post surfaces are intentionally **not yet in this spec**; it covers
-    the CP → Track C critical path (plus the invoice/pay presentment flows),
-    not all 35 stories.
+    **v1.2 scope:** this BFF contract covers the control-plane surface used by
+    DISPATCH v1.2 and the SCAFFOLD OpenAPI-as-contract workflow: core CP,
+    Track C billing, dunning, rerating, revrec close, simulations and billing
+    groups, exports/reports, webhooks, alerts, audit/compliance/GDPR/workflow,
+    developer portal/key management, entitlements, rate limits, tax/currency,
+    customer portal composites, and AI assistant/recommendations. Worker-owned
+    financial artifacts remain read/presentment or command-forwarding surfaces.
 servers:
   - url: /api/v1
     description: NestJS BFF (all paths below are relative to /api/v1)
@@ -62,6 +64,23 @@ tags:
   - name: Payment Methods
   - name: Credits & Wallet
   - name: Usage (proxy)
+  - name: Dunning
+  - name: Rerating
+  - name: Revenue Recognition
+  - name: Simulation
+  - name: Billing Groups
+  - name: Exports
+  - name: Reports
+  - name: Webhooks
+  - name: Alerts
+  - name: Audit & Compliance
+  - name: Workflow
+  - name: Developer Portal
+  - name: Entitlements
+  - name: Rate Limiting
+  - name: Tax & Currency
+  - name: Customer Portal
+  - name: AI Assistant
 
 paths:
   # ─────────────────────────── Organizations ───────────────────────────
@@ -893,8 +912,8 @@ paths:
                 name: { type: string }
                 status: { $ref: "#/components/schemas/CatalogStatus" }
                 config: { type: object }
-                minimum_amount: { type: [number, "null"] }
-                maximum_amount: { type: [number, "null"] }
+                minimum_amount: { oneOf: [{ $ref: "#/components/schemas/Money" }, { type: "null" }] }
+                maximum_amount: { oneOf: [{ $ref: "#/components/schemas/Money" }, { type: "null" }] }
       responses:
         "200":
           description: Updated pricing model
@@ -1068,7 +1087,7 @@ paths:
             schema:
               type: object
               properties:
-                rate: { type: number }
+                rate: { $ref: "#/components/schemas/Money" }
                 model_name: { type: [string, "null"] }
                 token_type: { $ref: "#/components/schemas/TokenType" }
                 unit_label: { type: string }
@@ -1209,7 +1228,7 @@ paths:
               type: object
               properties:
                 name: { type: string }
-                commit_amount: { type: number }
+                commit_amount: { $ref: "#/components/schemas/Money" }
                 auto_renew: { type: boolean }
                 status: { $ref: "#/components/schemas/ContractStatus" }
       responses:
@@ -1367,8 +1386,8 @@ paths:
             schema:
               type: object
               properties:
-                billingPeriod: { $ref: "#/components/schemas/BillingPeriod" }
-                contractId: { type: [string, "null"], format: uuid }
+                billing_period: { $ref: "#/components/schemas/BillingPeriod" }
+                contract_id: { type: [string, "null"], format: uuid }
       responses:
         "200":
           description: Updated subscription
@@ -1399,9 +1418,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [planId]
+              required: [plan_id]
               properties:
-                planId: { type: string, format: uuid }
+                plan_id: { type: string, format: uuid }
                 mode:
                   type: string
                   enum: [immediate, next_period]
@@ -1999,11 +2018,11 @@ paths:
                 type: object
                 properties:
                   customer_id: { type: string, format: uuid }
-                  total_remaining_amount: { type: number }
+                  total_remaining_amount: { $ref: "#/components/schemas/Money" }
                   currency: { type: string }
                   by_type:
                     type: object
-                    additionalProperties: { type: number }
+                    additionalProperties: { $ref: "#/components/schemas/Money" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -2046,8 +2065,8 @@ paths:
               type: object
               properties:
                 auto_topup_enabled: { type: boolean }
-                low_balance_threshold: { type: number }
-                topup_amount: { type: number }
+                low_balance_threshold: { $ref: "#/components/schemas/Money" }
+                topup_amount: { $ref: "#/components/schemas/Money" }
                 topup_payment_method_id: { type: [string, "null"], format: uuid }
       responses:
         "200":
@@ -2080,7 +2099,7 @@ paths:
               type: object
               required: [amount]
               properties:
-                amount: { type: number, exclusiveMinimum: 0 }
+                amount: { $ref: "#/components/schemas/Money" }
                 payment_method_id:
                   type: string
                   format: uuid
@@ -2214,6 +2233,1595 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+
+  # ─────────────────────────── v1.2 Control Plane Expansion ─────────────
+  /organizations/{orgId}/dunning-policy:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [Dunning]
+      operationId: getDunningPolicy
+      summary: Get dunning policy configuration
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "200":
+          description: Dunning policy
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DunningPolicy" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Dunning]
+      operationId: upsertDunningPolicy
+      summary: Create or update dunning policy configuration
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DunningPolicyUpsert" }
+      responses:
+        "200":
+          description: Dunning policy saved
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DunningPolicy" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /organizations/{orgId}/rerating-runs:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [Rerating]
+      operationId: listReratingRuns
+      summary: List rerating runs for an organization
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Paginated rerating runs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginatedList"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/ReratingRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Rerating]
+      operationId: createReratingRun
+      summary: Start an administrative rerating run
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReratingRunCreate" }
+      responses:
+        "202":
+          description: Rerating run accepted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReratingRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /rerating-runs/{reratingRunId}:
+    parameters:
+      - $ref: "#/components/parameters/ReratingRunId"
+    get:
+      tags: [Rerating]
+      operationId: getReratingRun
+      summary: Get rerating run status and impact totals
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "200":
+          description: Rerating run
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReratingRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /rerating-runs/{reratingRunId}/approve:
+    parameters:
+      - $ref: "#/components/parameters/ReratingRunId"
+    post:
+      tags: [Rerating]
+      operationId: approveReratingRun
+      summary: Approve a completed rerating run and emit adjustment commands
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
+      responses:
+        "200":
+          description: Rerating run approved
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReratingRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Rerating run is not approvable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /organizations/{orgId}/revenue-periods:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [Revenue Recognition]
+      operationId: listRevenuePeriods
+      summary: List revenue recognition periods
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      parameters:
+        - name: fiscal_year
+          in: query
+          schema: { type: integer }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Paginated revenue periods
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginatedList"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/RevenuePeriod" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /revenue-periods/{periodId}:
+    parameters:
+      - $ref: "#/components/parameters/PeriodId"
+    get:
+      tags: [Revenue Recognition]
+      operationId: getRevenuePeriod
+      summary: Get a revenue period close/read model
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "200":
+          description: Revenue period
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RevenuePeriod" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /revenue-periods/{periodId}/close:
+    parameters:
+      - $ref: "#/components/parameters/PeriodId"
+    post:
+      tags: [Revenue Recognition]
+      operationId: closeRevenuePeriod
+      summary: Close a revenue period
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RevenuePeriodCloseRequest" }
+      responses:
+        "200":
+          description: Revenue period closed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RevenuePeriod" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Period cannot be closed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /organizations/{orgId}/simulation-runs:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [Simulation]
+      operationId: listSimulationRuns
+      summary: List billing simulation runs
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Paginated simulation runs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginatedList"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/SimulationRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Simulation]
+      operationId: createSimulationRun
+      summary: Run a billing simulation for draft catalog or customer changes
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SimulationRunCreate" }
+      responses:
+        "202":
+          description: Simulation accepted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SimulationRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /simulation-runs/{simulationRunId}:
+    parameters:
+      - $ref: "#/components/parameters/SimulationRunId"
+    get:
+      tags: [Simulation]
+      operationId: getSimulationRun
+      summary: Get simulation result and totals
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "200":
+          description: Simulation run
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SimulationRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /organizations/{orgId}/billing-groups:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [Billing Groups]
+      operationId: listBillingGroups
+      summary: List billing groups
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "200":
+          description: Billing groups
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/BillingGroup" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Billing Groups]
+      operationId: createBillingGroup
+      summary: Create a billing group
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BillingGroupUpsert" }
+      responses:
+        "201":
+          description: Billing group created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BillingGroup" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /billing-groups/{billingGroupId}:
+    parameters:
+      - $ref: "#/components/parameters/BillingGroupId"
+    get:
+      tags: [Billing Groups]
+      operationId: getBillingGroup
+      summary: Get a billing group
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "200":
+          description: Billing group
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BillingGroup" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Billing Groups]
+      operationId: updateBillingGroup
+      summary: Update a billing group
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BillingGroupUpsert" }
+      responses:
+        "200":
+          description: Billing group updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BillingGroup" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [Billing Groups]
+      operationId: deleteBillingGroup
+      summary: Delete a billing group
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "204": { description: Billing group deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /billing-groups/{billingGroupId}/preview:
+    parameters:
+      - $ref: "#/components/parameters/BillingGroupId"
+    post:
+      tags: [Billing Groups]
+      operationId: previewBillingGroup
+      summary: Preview billing group invoice split and totals
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BillingGroupPreviewRequest" }
+      responses:
+        "200":
+          description: Billing group preview
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BillingGroupPreview" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /organizations/{orgId}/export-configs:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [Exports]
+      operationId: listExportConfigs
+      summary: List export configurations
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "200":
+          description: Export configurations
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ExportConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Exports]
+      operationId: createExportConfig
+      summary: Create an export configuration
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExportConfigUpsert" }
+      responses:
+        "201":
+          description: Export configuration created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExportConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /export-configs/{exportConfigId}:
+    parameters:
+      - $ref: "#/components/parameters/ExportConfigId"
+    put:
+      tags: [Exports]
+      operationId: updateExportConfig
+      summary: Update an export configuration
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExportConfigUpsert" }
+      responses:
+        "200":
+          description: Export configuration updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExportConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Exports]
+      operationId: deleteExportConfig
+      summary: Delete an export configuration
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "204": { description: Export configuration deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /export-configs/{exportConfigId}/runs:
+    parameters:
+      - $ref: "#/components/parameters/ExportConfigId"
+    get:
+      tags: [Exports]
+      operationId: listExportRuns
+      summary: List export run history
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Paginated export runs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginatedList"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/ExportRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Exports]
+      operationId: runExportConfig
+      summary: Run an export configuration
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "202":
+          description: Export run queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExportRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /organizations/{orgId}/reports/run:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    post:
+      tags: [Reports]
+      operationId: runReport
+      summary: Run a report
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReportRunRequest" }
+      responses:
+        "202":
+          description: Report run queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReportRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /organizations/{orgId}/reports/history:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [Reports]
+      operationId: listReportRuns
+      summary: List report run history
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Paginated report runs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginatedList"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/ReportRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /organizations/{orgId}/webhooks:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [Webhooks]
+      operationId: listWebhooks
+      summary: List registered webhooks
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, DEVELOPER]
+      responses:
+        "200":
+          description: Webhooks
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/WebhookEndpoint" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /organizations/{orgId}/webhooks/register:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    post:
+      tags: [Webhooks]
+      operationId: registerWebhook
+      summary: Register a webhook endpoint
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, DEVELOPER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WebhookEndpointCreate" }
+      responses:
+        "201":
+          description: Webhook registered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebhookEndpoint" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /webhooks/{webhookId}:
+    parameters:
+      - $ref: "#/components/parameters/WebhookId"
+    put:
+      tags: [Webhooks]
+      operationId: updateWebhook
+      summary: Update a webhook endpoint
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, DEVELOPER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WebhookEndpointCreate" }
+      responses:
+        "200":
+          description: Webhook updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebhookEndpoint" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Webhooks]
+      operationId: deleteWebhook
+      summary: Delete a webhook endpoint
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, DEVELOPER]
+      responses:
+        "204": { description: Webhook deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /webhooks/{webhookId}/deliveries:
+    parameters:
+      - $ref: "#/components/parameters/WebhookId"
+    get:
+      tags: [Webhooks]
+      operationId: listWebhookDeliveries
+      summary: List webhook delivery attempts
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, DEVELOPER]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Paginated deliveries
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginatedList"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/WebhookDelivery" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /webhook-deliveries/{deliveryId}/retry:
+    parameters:
+      - $ref: "#/components/parameters/DeliveryId"
+    post:
+      tags: [Webhooks]
+      operationId: retryWebhookDelivery
+      summary: Retry a failed webhook delivery
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, DEVELOPER]
+      responses:
+        "202":
+          description: Delivery retry queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebhookDelivery" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /organizations/{orgId}/alerts:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [Alerts]
+      operationId: listAlerts
+      summary: List alert instances
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, CUSTOMER]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [open, acknowledged, resolved] }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Paginated alerts
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginatedList"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/Alert" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /organizations/{orgId}/alert-rules:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [Alerts]
+      operationId: listAlertRules
+      summary: List alert rules
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "200":
+          description: Alert rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AlertRule" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Alerts]
+      operationId: createAlertRule
+      summary: Create an alert rule
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AlertRuleUpsert" }
+      responses:
+        "201":
+          description: Alert rule created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AlertRule" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /alert-rules/{alertRuleId}:
+    parameters:
+      - $ref: "#/components/parameters/AlertRuleId"
+    put:
+      tags: [Alerts]
+      operationId: updateAlertRule
+      summary: Update an alert rule
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AlertRuleUpsert" }
+      responses:
+        "200":
+          description: Alert rule updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AlertRule" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Alerts]
+      operationId: deleteAlertRule
+      summary: Delete an alert rule
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "204": { description: Alert rule deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /organizations/{orgId}/audit-events:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [Audit & Compliance]
+      operationId: listAuditEvents
+      summary: Query audit events
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      parameters:
+        - name: actor_id
+          in: query
+          schema: { type: string }
+        - name: resource_type
+          in: query
+          schema: { type: string }
+        - name: start_at
+          in: query
+          schema: { type: string, format: date-time }
+        - name: end_at
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Paginated audit events
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginatedList"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AuditEvent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /organizations/{orgId}/compliance/evidence:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [Audit & Compliance]
+      operationId: listComplianceEvidence
+      summary: List compliance evidence records
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "200":
+          description: Compliance evidence
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ComplianceEvidence" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Audit & Compliance]
+      operationId: createComplianceEvidence
+      summary: Create a compliance evidence record
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ComplianceEvidence" }
+      responses:
+        "201":
+          description: Compliance evidence recorded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ComplianceEvidence" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /organizations/{orgId}/gdpr/requests:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [Audit & Compliance]
+      operationId: listGdprRequests
+      summary: List GDPR/privacy requests
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "200":
+          description: GDPR requests
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/GdprRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Audit & Compliance]
+      operationId: createGdprRequest
+      summary: Create a GDPR/privacy request
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, CUSTOMER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GdprRequest" }
+      responses:
+        "201":
+          description: GDPR request created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GdprRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /gdpr/requests/{gdprRequestId}:
+    parameters:
+      - $ref: "#/components/parameters/GdprRequestId"
+    get:
+      tags: [Audit & Compliance]
+      operationId: getGdprRequest
+      summary: Get GDPR/privacy request status
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, CUSTOMER]
+      responses:
+        "200":
+          description: GDPR request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GdprRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workflow/tasks:
+    get:
+      tags: [Workflow]
+      operationId: listWorkflowTasks
+      summary: List workflow tasks awaiting action
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [open, approved, rejected, canceled] }
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Paginated workflow tasks
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaginatedList"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/WorkflowTask" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /workflow/tasks/{workflowTaskId}/action:
+    parameters:
+      - $ref: "#/components/parameters/WorkflowTaskId"
+    post:
+      tags: [Workflow]
+      operationId: actOnWorkflowTask
+      summary: Approve, reject, or cancel a workflow task
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkflowAction" }
+      responses:
+        "200":
+          description: Workflow task updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowTask" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Task state does not allow the requested action
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /developer/portal-summary:
+    get:
+      tags: [Developer Portal]
+      operationId: getDeveloperPortalSummary
+      summary: Developer portal composite summary
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, DEVELOPER]
+      responses:
+        "200":
+          description: Developer portal summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeveloperPortalSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /developer/api-keys:
+    get:
+      tags: [Developer Portal]
+      operationId: listApiKeys
+      summary: List API keys visible to the developer portal
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, DEVELOPER]
+      responses:
+        "200":
+          description: API keys
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ApiKey" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Developer Portal]
+      operationId: createApiKey
+      summary: Create an API key
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, DEVELOPER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApiKeyCreate" }
+      responses:
+        "201":
+          description: API key created; secret shown once
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiKey" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /developer/api-keys/{apiKeyId}:
+    parameters:
+      - $ref: "#/components/parameters/ApiKeyId"
+    delete:
+      tags: [Developer Portal]
+      operationId: revokeApiKey
+      summary: Revoke an API key
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, DEVELOPER]
+      responses:
+        "204": { description: API key revoked }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /developer/api-keys/{apiKeyId}/rotate:
+    parameters:
+      - $ref: "#/components/parameters/ApiKeyId"
+    post:
+      tags: [Developer Portal]
+      operationId: rotateApiKey
+      summary: Rotate an API key secret
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, DEVELOPER]
+      responses:
+        "200":
+          description: API key rotated; secret shown once
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiKey" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /customers/{customerId}/entitlements:
+    parameters:
+      - $ref: "#/components/parameters/CustomerId"
+    get:
+      tags: [Entitlements]
+      operationId: listCustomerEntitlements
+      summary: List customer entitlement grants
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, CUSTOMER]
+      responses:
+        "200":
+          description: Entitlement grants
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/EntitlementGrant" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Entitlements]
+      operationId: grantEntitlement
+      summary: Grant an entitlement to a customer
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EntitlementGrantUpsert" }
+      responses:
+        "201":
+          description: Entitlement granted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EntitlementGrant" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /entitlements/{entitlementId}:
+    parameters:
+      - $ref: "#/components/parameters/EntitlementId"
+    put:
+      tags: [Entitlements]
+      operationId: updateEntitlement
+      summary: Update an entitlement grant
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EntitlementGrantUpsert" }
+      responses:
+        "200":
+          description: Entitlement updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EntitlementGrant" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Entitlements]
+      operationId: revokeEntitlement
+      summary: Revoke an entitlement grant
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "204": { description: Entitlement revoked }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /organizations/{orgId}/rate-limit-policies:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [Rate Limiting]
+      operationId: listRateLimitPolicies
+      summary: List rate limit policies
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "200":
+          description: Rate limit policies
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RateLimitPolicy" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Rate Limiting]
+      operationId: createRateLimitPolicy
+      summary: Create a rate limit policy
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RateLimitPolicyUpsert" }
+      responses:
+        "201":
+          description: Rate limit policy created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RateLimitPolicy" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /rate-limit-policies/{policyId}:
+    parameters:
+      - $ref: "#/components/parameters/PolicyId"
+    put:
+      tags: [Rate Limiting]
+      operationId: updateRateLimitPolicy
+      summary: Update a rate limit policy
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RateLimitPolicyUpsert" }
+      responses:
+        "200":
+          description: Rate limit policy updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RateLimitPolicy" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Rate Limiting]
+      operationId: deleteRateLimitPolicy
+      summary: Delete a rate limit policy
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "204": { description: Rate limit policy deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /rate-limit-policies/{policyId}/rules:
+    parameters:
+      - $ref: "#/components/parameters/PolicyId"
+    get:
+      tags: [Rate Limiting]
+      operationId: listRateLimitRules
+      summary: List rate limit policy rules
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "200":
+          description: Rate limit rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RateLimitRule" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Rate Limiting]
+      operationId: createRateLimitRule
+      summary: Create a rate limit rule
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RateLimitRuleUpsert" }
+      responses:
+        "201":
+          description: Rate limit rule created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RateLimitRule" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /rate-limit-rules/{ruleId}:
+    parameters:
+      - $ref: "#/components/parameters/RuleId"
+    put:
+      tags: [Rate Limiting]
+      operationId: updateRateLimitRule
+      summary: Update a rate limit rule
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RateLimitRuleUpsert" }
+      responses:
+        "200":
+          description: Rate limit rule updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RateLimitRule" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Rate Limiting]
+      operationId: deleteRateLimitRule
+      summary: Delete a rate limit rule
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "204": { description: Rate limit rule deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /organizations/{orgId}/rate-limits/usage:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [Rate Limiting]
+      operationId: getRateLimitUsage
+      summary: Read current rate limit usage windows
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, DEVELOPER]
+      parameters:
+        - name: subject_id
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Current rate limit usage
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RateLimitUsage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /organizations/{orgId}/rate-limits/reset:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    post:
+      tags: [Rate Limiting]
+      operationId: resetRateLimitUsage
+      summary: Reset rate limit usage for a subject/key/window
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RateLimitResetRequest" }
+      responses:
+        "202": { description: Rate limit reset accepted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /organizations/{orgId}/tax-config:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [Tax & Currency]
+      operationId: getTaxConfig
+      summary: Get tax configuration
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "200":
+          description: Tax configuration
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaxConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      tags: [Tax & Currency]
+      operationId: updateTaxConfig
+      summary: Update tax configuration
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaxConfig" }
+      responses:
+        "200":
+          description: Tax configuration updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaxConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /organizations/{orgId}/currency-config:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [Tax & Currency]
+      operationId: getCurrencyConfig
+      summary: Get currency and FX configuration
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "200":
+          description: Currency configuration
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CurrencyConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      tags: [Tax & Currency]
+      operationId: updateCurrencyConfig
+      summary: Update currency and FX configuration
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CurrencyConfig" }
+      responses:
+        "200":
+          description: Currency configuration updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CurrencyConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /customers/{customerId}/tax-exemptions:
+    parameters:
+      - $ref: "#/components/parameters/CustomerId"
+    get:
+      tags: [Tax & Currency]
+      operationId: listTaxExemptions
+      summary: List a customer's tax exemptions
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      responses:
+        "200":
+          description: Tax exemptions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/TaxExemption" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Tax & Currency]
+      operationId: createTaxExemption
+      summary: Register a tax exemption certificate (starts in pending verification)
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaxExemptionCreate" }
+      responses:
+        "201":
+          description: Exemption registered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaxExemption" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /tax-exemptions/{exemptionId}:
+    parameters:
+      - $ref: "#/components/parameters/ExemptionId"
+    patch:
+      tags: [Tax & Currency]
+      operationId: updateTaxExemption
+      summary: Update exemption status (verify, reject, revoke) or expiry
+      description: >-
+        Only verified exemptions reduce tax at invoice finalization; rejected or
+        revoked exemptions must not (billing.tax_calculation_audit cites the
+        exemption_id when applied).
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaxExemptionUpdate" }
+      responses:
+        "200":
+          description: Exemption updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaxExemption" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: Invalid status transition (e.g. revoked exemption cannot be re-verified)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /customers/{customerId}/tax-ids:
+    parameters:
+      - $ref: "#/components/parameters/CustomerId"
+    get:
+      tags: [Tax & Currency]
+      operationId: listCustomerTaxIds
+      summary: List a customer's tax IDs
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, CUSTOMER]
+      responses:
+        "200":
+          description: Customer tax IDs
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CustomerTaxId" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      tags: [Tax & Currency]
+      operationId: upsertCustomerTaxIds
+      summary: Set the customer's tax IDs (VAT numbers validated, e.g. VIES)
+      description: >-
+        Validated tax IDs appear on invoices and drive VAT reverse-charge
+        annotation at finalization (CR-7).
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: "#/components/schemas/CustomerTaxIdUpsert" }
+      responses:
+        "200":
+          description: Tax IDs replaced
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CustomerTaxId" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /customers/{customerId}/portal-summary:
+    parameters:
+      - $ref: "#/components/parameters/CustomerId"
+    get:
+      tags: [Customer Portal]
+      operationId: getCustomerPortalSummary
+      summary: Customer portal composite summary
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, CUSTOMER]
+      responses:
+        "200":
+          description: Customer portal summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CustomerPortalComposite" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /assistant/chat/stream:
+    post:
+      tags: [AI Assistant]
+      operationId: streamAssistantChat
+      summary: Stream AI assistant/chatbot responses over SSE
+      x-guard: [SUPER_ADMIN, ORG_ADMIN, CUSTOMER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AssistantChatRequest" }
+      responses:
+        "200":
+          description: Server-sent assistant response stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE frames carrying AssistantMessage JSON payloads
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /organizations/{orgId}/recommendations:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    get:
+      tags: [AI Assistant]
+      operationId: listRecommendations
+      summary: List AI recommendations
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [open, applied, dismissed] }
+      responses:
+        "200":
+          description: Recommendations
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Recommendation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /recommendations/{recommendationId}/apply:
+    parameters:
+      - $ref: "#/components/parameters/RecommendationId"
+    post:
+      tags: [AI Assistant]
+      operationId: applyRecommendation
+      summary: Apply an AI recommendation
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecommendationAction" }
+      responses:
+        "200":
+          description: Recommendation applied
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Recommendation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /recommendations/{recommendationId}/dismiss:
+    parameters:
+      - $ref: "#/components/parameters/RecommendationId"
+    post:
+      tags: [AI Assistant]
+      operationId: dismissRecommendation
+      summary: Dismiss an AI recommendation
+      x-guard: [SUPER_ADMIN, ORG_ADMIN]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecommendationAction" }
+      responses:
+        "200":
+          description: Recommendation dismissed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Recommendation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -2296,6 +3904,86 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    ReratingRunId:
+      name: reratingRunId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PeriodId:
+      name: periodId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SimulationRunId:
+      name: simulationRunId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    BillingGroupId:
+      name: billingGroupId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ExportConfigId:
+      name: exportConfigId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ExemptionId:
+      name: exemptionId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    WebhookId:
+      name: webhookId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    DeliveryId:
+      name: deliveryId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AlertRuleId:
+      name: alertRuleId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    GdprRequestId:
+      name: gdprRequestId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    WorkflowTaskId:
+      name: workflowTaskId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ApiKeyId:
+      name: apiKeyId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    EntitlementId:
+      name: entitlementId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PolicyId:
+      name: policyId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RuleId:
+      name: ruleId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    RecommendationId:
+      name: recommendationId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
 
   responses:
     Unauthorized:
@@ -2321,6 +4009,22 @@ components:
 
   schemas:
     # ─── Shared ───
+    Decimal:
+      type: string
+      format: decimal-string
+      pattern: '^-?\d+(\.\d+)?$'
+      description: >
+        Base-10 decimal serialized as a string. Use for Decimal(38,9)
+        quantities/percentages to avoid binary floating-point drift on the wire.
+      examples: ["123.456789123"]
+    Money:
+      allOf:
+        - $ref: "#/components/schemas/Decimal"
+      description: >
+        Monetary amount, unit price, balance, tax amount, credit amount, revenue,
+        cost, commit, or price serialized as a decimal string. Currency is carried
+        in adjacent currency fields or inherited from the resource.
+      examples: ["123.45"]
     Error:
       type: object
       required: [error]
@@ -2344,10 +4048,10 @@ components:
         items:
           type: array
           items: {}
-        totalCount: { type: integer }
+        total_count: { type: integer }
         page: { type: integer }
         limit: { type: integer }
-        hasNextPage: { type: boolean }
+        has_next_page: { type: boolean }
 
     # ─── Enums (canonical per ERD.md conflict register) ───
     OrgStatus:
@@ -2475,7 +4179,7 @@ components:
         email: { type: [string, "null"], format: email }
         billing_email: { type: [string, "null"], format: email }
         billing_address: { type: [object, "null"] }
-        credit_balance: { type: number }
+        credit_balance: { $ref: "#/components/schemas/Money" }
         health_score: { type: [integer, "null"] }
         status: { $ref: "#/components/schemas/CustomerStatus" }
         created_at: { type: string, format: date-time }
@@ -2568,7 +4272,7 @@ components:
       type: object
       required: [value, timestamp, idempotency_key]
       properties:
-        value: { type: number }
+        value: { $ref: "#/components/schemas/Decimal" }
         timestamp: { type: string, format: date-time }
         idempotency_key:
           type: string
@@ -2634,7 +4338,7 @@ components:
           type: [integer, "null"]
           description: CR-14 trials
         base_amount:
-          type: number
+          $ref: "#/components/schemas/Money"
           description: NOT base_price (C-5)
         currency: { type: string }
         pay_in_advance: { type: boolean }
@@ -2645,7 +4349,7 @@ components:
         seat_included:
           type: [integer, "null"]
           description: CR-3 per-seat pricing
-        seat_price: { type: [number, "null"] }
+        seat_price: { oneOf: [{ $ref: "#/components/schemas/Money" }, { type: "null" }] }
         charges:
           type: array
           items: { $ref: "#/components/schemas/Charge" }
@@ -2656,7 +4360,7 @@ components:
         name: { type: string }
         slug: { type: string }
         billing_period: { $ref: "#/components/schemas/BillingPeriod" }
-        base_amount: { type: number }
+        base_amount: { $ref: "#/components/schemas/Money" }
         currency: { type: string }
         pay_in_advance: { type: boolean, default: false }
         trial_days: { type: integer }
@@ -2671,7 +4375,9 @@ components:
         name: { type: string }
         charge_model: { $ref: "#/components/schemas/PricingType" }
         included_units:
-          type: [number, "null"]
+          oneOf:
+            - $ref: "#/components/schemas/Decimal"
+            - type: "null"
           description: Allowance before overage (ADR-001 §3)
         pay_in_advance: { type: boolean }
         is_active: { type: boolean }
@@ -2688,10 +4394,14 @@ components:
           type: [object, "null"]
           description: Matrix dimensions (model × token_type), package size/rounding, markup pct
         minimum_amount:
-          type: [number, "null"]
+          oneOf:
+            - $ref: "#/components/schemas/Money"
+            - type: "null"
           description: CR-3 per-period minimum
         maximum_amount:
-          type: [number, "null"]
+          oneOf:
+            - $ref: "#/components/schemas/Money"
+            - type: "null"
           description: CR-3 per-period cap
         effective_from: { type: [string, "null"], format: date }
         version: { type: integer }
@@ -2707,8 +4417,8 @@ components:
         pricing_type: { $ref: "#/components/schemas/PricingType" }
         meter_id: { type: [string, "null"], format: uuid }
         config: { type: [object, "null"] }
-        minimum_amount: { type: [number, "null"] }
-        maximum_amount: { type: [number, "null"] }
+        minimum_amount: { oneOf: [{ $ref: "#/components/schemas/Money" }, { type: "null" }] }
+        maximum_amount: { oneOf: [{ $ref: "#/components/schemas/Money" }, { type: "null" }] }
         effective_from: { type: string, format: date }
         tiers:
           type: array
@@ -2717,11 +4427,13 @@ components:
       type: object
       properties:
         id: { type: string, format: uuid }
-        from_qty: { type: number }
+        from_qty: { $ref: "#/components/schemas/Decimal" }
         to_qty:
-          type: [number, "null"]
+          oneOf:
+            - $ref: "#/components/schemas/Decimal"
+            - type: "null"
           description: null = unbounded
-        price_per_unit: { type: number }
+        price_per_unit: { $ref: "#/components/schemas/Money" }
         sort_order: { type: integer }
 
     RateCard:
@@ -2748,7 +4460,7 @@ components:
           oneOf:
             - $ref: "#/components/schemas/TokenType"
             - type: "null"
-        rate: { type: number }
+        rate: { $ref: "#/components/schemas/Money" }
         unit_label: { type: string }
     RateCardRateCreate:
       type: object
@@ -2757,7 +4469,7 @@ components:
         meter_id: { type: string, format: uuid }
         model_name: { type: string }
         token_type: { $ref: "#/components/schemas/TokenType" }
-        rate: { type: number }
+        rate: { $ref: "#/components/schemas/Money" }
         unit_label: { type: string }
 
     Contract:
@@ -2770,7 +4482,7 @@ components:
           format: uuid
           description: If null, contract-specific rates must be added via POST /contracts/{id}/rates
         name: { type: string }
-        commit_amount: { type: number }
+        commit_amount: { $ref: "#/components/schemas/Money" }
         auto_renew: { type: boolean }
         status: { $ref: "#/components/schemas/ContractStatus" }
         start_date: { type: [string, "null"], format: date }
@@ -2787,7 +4499,7 @@ components:
         customer_id: { type: string, format: uuid }
         name: { type: string }
         rate_card_id: { type: [string, "null"], format: uuid }
-        commit_amount: { type: number }
+        commit_amount: { $ref: "#/components/schemas/Money" }
         auto_renew: { type: boolean, default: false }
         start_date: { type: string, format: date }
         end_date: { type: string, format: date }
@@ -2798,7 +4510,7 @@ components:
         contract_id: { type: string, format: uuid }
         meter_id: { type: string, format: uuid }
         model_name: { type: [string, "null"] }
-        rate: { type: number }
+        rate: { $ref: "#/components/schemas/Money" }
         unit_label: { type: string }
         effective_date: { type: string, format: date }
         expires_date: { type: [string, "null"], format: date }
@@ -2808,7 +4520,7 @@ components:
       properties:
         meter_id: { type: string, format: uuid }
         model_name: { type: string }
-        rate: { type: number }
+        rate: { $ref: "#/components/schemas/Money" }
         unit_label: { type: string }
         effective_date: { type: string, format: date }
         expires_date: { type: string, format: date }
@@ -2839,12 +4551,12 @@ components:
         created_at: { type: string, format: date-time }
     SubscriptionCreate:
       type: object
-      required: [planId, billingPeriod]
+      required: [plan_id, billing_period]
       properties:
-        planId: { type: string, format: uuid }
-        billingPeriod: { $ref: "#/components/schemas/BillingPeriod" }
-        startDate: { type: string, format: date }
-        contractId: { type: string, format: uuid }
+        plan_id: { type: string, format: uuid }
+        billing_period: { $ref: "#/components/schemas/BillingPeriod" }
+        start_date: { type: string, format: date }
+        contract_id: { type: string, format: uuid }
 
     # ─── Billing (read models — written by the Go billing worker) ───
     Invoice:
@@ -2863,14 +4575,14 @@ components:
         status: { $ref: "#/components/schemas/InvoiceStatus" }
         period_start: { type: string, format: date-time }
         period_end: { type: string, format: date-time }
-        subtotal: { type: number }
+        subtotal: { $ref: "#/components/schemas/Money" }
         credits_applied:
-          type: number
+          $ref: "#/components/schemas/Money"
           description: NOT credits (C-19)
-        tax_rate: { type: number }
-        tax_amount: { type: number }
+        tax_rate: { $ref: "#/components/schemas/Money" }
+        tax_amount: { $ref: "#/components/schemas/Money" }
         total:
-          type: number
+          $ref: "#/components/schemas/Money"
           description: NOT amount (C-19)
         currency: { type: string }
         due_date: { type: [string, "null"], format: date }
@@ -2887,9 +4599,9 @@ components:
         meter_id: { type: [string, "null"], format: uuid }
         line_type: { $ref: "#/components/schemas/LineType" }
         description: { type: string }
-        quantity: { type: number }
-        unit_price: { type: number }
-        amount: { type: number }
+        quantity: { $ref: "#/components/schemas/Decimal" }
+        unit_price: { $ref: "#/components/schemas/Money" }
+        amount: { $ref: "#/components/schemas/Money" }
         model:
           type: [string, "null"]
           description: LLM model attribution
@@ -2918,7 +4630,7 @@ components:
         kind:
           type: string
           enum: [credit, debit]
-        amount: { type: number }
+        amount: { $ref: "#/components/schemas/Money" }
         currency: { type: string }
         reason: { type: [string, "null"] }
         status: { $ref: "#/components/schemas/CreditNoteStatus" }
@@ -2933,7 +4645,7 @@ components:
         customer_id: { type: string, format: uuid }
         invoice_id: { type: [string, "null"], format: uuid }
         payment_method_id: { type: [string, "null"], format: uuid }
-        amount: { type: number }
+        amount: { $ref: "#/components/schemas/Money" }
         currency: { type: string }
         status: { $ref: "#/components/schemas/PaymentStatus" }
         collection_mode: { $ref: "#/components/schemas/CollectionMode" }
@@ -2946,7 +4658,7 @@ components:
       required: [invoice_uuid, amount, currency, collection_mode]
       properties:
         invoice_uuid: { type: string, format: uuid }
-        amount: { type: number, exclusiveMinimum: 0 }
+        amount: { $ref: "#/components/schemas/Money" }
         currency: { type: string }
         collection_mode:
           type: string
@@ -2998,11 +4710,11 @@ components:
         org_id: { type: string, format: uuid }
         customer_id: { type: string, format: uuid }
         type: { $ref: "#/components/schemas/CreditType" }
-        original_amount: { type: number }
+        original_amount: { $ref: "#/components/schemas/Money" }
         remaining_amount:
-          type: number
+          $ref: "#/components/schemas/Money"
           description: NOT remaining_balance (C-18)
-        used_amount: { type: number }
+        used_amount: { $ref: "#/components/schemas/Money" }
         priority: { type: integer }
         applicable_to: { type: [string, "null"] }
         status: { $ref: "#/components/schemas/CreditStatus" }
@@ -3013,7 +4725,7 @@ components:
       type: object
       required: [amount, type]
       properties:
-        amount: { type: number, exclusiveMinimum: 0 }
+        amount: { $ref: "#/components/schemas/Money" }
         type: { $ref: "#/components/schemas/CreditType" }
         priority: { type: integer }
         applicable_to: { type: string }
@@ -3028,8 +4740,8 @@ components:
         type:
           type: string
           enum: [grant, usage, adjustment, expired, revoked, refunded]
-        amount: { type: number }
-        balance: { type: number }
+        amount: { $ref: "#/components/schemas/Money" }
+        balance: { $ref: "#/components/schemas/Money" }
         description: { type: [string, "null"] }
         created_at: { type: string, format: date-time }
 
@@ -3042,11 +4754,11 @@ components:
         id: { type: string, format: uuid }
         org_id: { type: string, format: uuid }
         customer_id: { type: string, format: uuid }
-        balance: { type: number }
+        balance: { $ref: "#/components/schemas/Money" }
         currency: { type: string }
-        low_balance_threshold: { type: [number, "null"] }
+        low_balance_threshold: { oneOf: [{ $ref: "#/components/schemas/Money" }, { type: "null" }] }
         auto_topup_enabled: { type: boolean }
-        topup_amount: { type: [number, "null"] }
+        topup_amount: { oneOf: [{ $ref: "#/components/schemas/Money" }, { type: "null" }] }
         topup_payment_method_id: { type: [string, "null"], format: uuid }
         status: { $ref: "#/components/schemas/WalletStatus" }
         updated_at: { type: string, format: date-time }
@@ -3056,8 +4768,8 @@ components:
         id: { type: string, format: uuid }
         wallet_id: { type: string, format: uuid }
         type: { $ref: "#/components/schemas/WalletTransactionType" }
-        amount: { type: number }
-        balance_after: { type: number }
+        amount: { $ref: "#/components/schemas/Money" }
+        balance_after: { $ref: "#/components/schemas/Money" }
         payment_id: { type: [string, "null"], format: uuid }
         period_ref:
           type: [string, "null"]
@@ -3078,7 +4790,7 @@ components:
         period_end: { type: string, format: date-time }
         total_events: { type: integer }
         total_tokens: { type: integer }
-        total_cost: { type: number }
+        total_cost: { $ref: "#/components/schemas/Money" }
         currency: { type: string }
         by_meter:
           type: array
@@ -3087,5 +4799,560 @@ components:
             properties:
               meter_id: { type: string, format: uuid }
               meter_name: { type: string }
-              total_usage: { type: number }
-              total_cost: { type: number }
+              total_usage: { $ref: "#/components/schemas/Decimal" }
+              total_cost: { $ref: "#/components/schemas/Money" }
+
+    # ─── v1.2 Control-plane expansion ───
+    DunningPolicy:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        enabled: { type: boolean }
+        grace_days: { type: integer }
+        retry_schedule:
+          type: array
+          items:
+            type: object
+            properties:
+              day_offset: { type: integer }
+              action: { type: string, enum: [email, retry_payment, suspend, escalate] }
+        minimum_invoice_amount: { $ref: "#/components/schemas/Money" }
+        currency: { type: string }
+        updated_at: { type: string, format: date-time }
+    DunningPolicyUpsert:
+      type: object
+      required: [enabled, grace_days, retry_schedule]
+      properties:
+        enabled: { type: boolean }
+        grace_days: { type: integer, minimum: 0 }
+        retry_schedule:
+          type: array
+          items:
+            type: object
+            required: [day_offset, action]
+            properties:
+              day_offset: { type: integer, minimum: 0 }
+              action: { type: string, enum: [email, retry_payment, suspend, escalate] }
+        minimum_invoice_amount: { $ref: "#/components/schemas/Money" }
+        currency: { type: string }
+
+    ReratingRun:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        customer_id: { type: [string, "null"], format: uuid }
+        period_start: { type: string, format: date-time }
+        period_end: { type: string, format: date-time }
+        reason: { type: string }
+        status: { type: string, enum: [queued, running, completed, approved, failed, canceled] }
+        affected_invoice_count: { type: integer }
+        credit_total: { $ref: "#/components/schemas/Money" }
+        debit_total: { $ref: "#/components/schemas/Money" }
+        currency: { type: string }
+        created_at: { type: string, format: date-time }
+        completed_at: { type: [string, "null"], format: date-time }
+    ReratingRunCreate:
+      type: object
+      required: [period_start, period_end, reason]
+      properties:
+        customer_id: { type: string, format: uuid }
+        period_start: { type: string, format: date-time }
+        period_end: { type: string, format: date-time }
+        reason: { type: string }
+        dry_run: { type: boolean, default: true }
+
+    RevenuePeriod:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        period_start: { type: string, format: date }
+        period_end: { type: string, format: date }
+        status: { type: string, enum: [open, closing, closed, reopened] }
+        recognized_revenue: { $ref: "#/components/schemas/Money" }
+        deferred_revenue: { $ref: "#/components/schemas/Money" }
+        currency: { type: string }
+        closed_at: { type: [string, "null"], format: date-time }
+    RevenuePeriodCloseRequest:
+      type: object
+      properties:
+        close_reason: { type: string }
+        force: { type: boolean, default: false }
+
+    SimulationRun:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        scenario_name: { type: string }
+        status: { type: string, enum: [queued, running, completed, failed] }
+        input_snapshot: { type: object, additionalProperties: true }
+        estimated_revenue: { $ref: "#/components/schemas/Money" }
+        estimated_cost: { $ref: "#/components/schemas/Money" }
+        currency: { type: string }
+        created_at: { type: string, format: date-time }
+        completed_at: { type: [string, "null"], format: date-time }
+    SimulationRunCreate:
+      type: object
+      required: [scenario_name, period_start, period_end]
+      properties:
+        scenario_name: { type: string }
+        period_start: { type: string, format: date-time }
+        period_end: { type: string, format: date-time }
+        customer_ids:
+          type: array
+          items: { type: string, format: uuid }
+        catalog_overrides: { type: object, additionalProperties: true }
+
+    BillingGroup:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        name: { type: string }
+        customer_ids:
+          type: array
+          items: { type: string, format: uuid }
+        invoice_owner_customer_id: { type: string, format: uuid }
+        allocation_rule: { type: string, enum: [single_invoice, split_evenly, split_by_usage, custom] }
+        status: { type: string, enum: [active, inactive] }
+        created_at: { type: string, format: date-time }
+    BillingGroupUpsert:
+      type: object
+      required: [name, customer_ids, invoice_owner_customer_id, allocation_rule]
+      properties:
+        name: { type: string }
+        customer_ids:
+          type: array
+          items: { type: string, format: uuid }
+        invoice_owner_customer_id: { type: string, format: uuid }
+        allocation_rule: { type: string, enum: [single_invoice, split_evenly, split_by_usage, custom] }
+        custom_allocations:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/Decimal" }
+    BillingGroupPreviewRequest:
+      type: object
+      properties:
+        period_start: { type: string, format: date-time }
+        period_end: { type: string, format: date-time }
+    BillingGroupPreview:
+      type: object
+      properties:
+        billing_group_id: { type: string, format: uuid }
+        invoice_total: { $ref: "#/components/schemas/Money" }
+        currency: { type: string }
+        allocations:
+          type: array
+          items:
+            type: object
+            properties:
+              customer_id: { type: string, format: uuid }
+              amount: { $ref: "#/components/schemas/Money" }
+              usage_quantity: { $ref: "#/components/schemas/Decimal" }
+
+    ExportConfig:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        name: { type: string }
+        target: { type: string, enum: [s3, gcs, snowflake, webhook] }
+        dataset: { type: string, enum: [invoices, usage, payments, credits, audit_events, revenue] }
+        schedule_cron: { type: [string, "null"] }
+        enabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+    ExportConfigUpsert:
+      type: object
+      required: [name, target, dataset]
+      properties:
+        name: { type: string }
+        target: { type: string, enum: [s3, gcs, snowflake, webhook] }
+        dataset: { type: string, enum: [invoices, usage, payments, credits, audit_events, revenue] }
+        destination_config: { type: object, additionalProperties: true }
+        schedule_cron: { type: string }
+        enabled: { type: boolean, default: true }
+    ExportRun:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        export_config_id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, running, succeeded, failed] }
+        row_count: { type: integer }
+        artifact_url: { type: [string, "null"], format: uri }
+        started_at: { type: string, format: date-time }
+        completed_at: { type: [string, "null"], format: date-time }
+
+    ReportRunRequest:
+      type: object
+      required: [report_type]
+      properties:
+        report_type: { type: string, enum: [mrr, usage, ar_aging, revenue, credits, churn] }
+        period_start: { type: string, format: date-time }
+        period_end: { type: string, format: date-time }
+        filters: { type: object, additionalProperties: true }
+        output_format: { type: string, enum: [json, csv, pdf], default: json }
+    ReportRun:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        report_type: { type: string }
+        status: { type: string, enum: [queued, running, succeeded, failed] }
+        total_revenue: { $ref: "#/components/schemas/Money" }
+        currency: { type: string }
+        artifact_url: { type: [string, "null"], format: uri }
+        created_at: { type: string, format: date-time }
+
+    WebhookEndpoint:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        url: { type: string, format: uri }
+        events:
+          type: array
+          items: { type: string }
+        status: { type: string, enum: [active, disabled] }
+        secret_last4: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+    WebhookEndpointCreate:
+      type: object
+      required: [url, events]
+      properties:
+        url: { type: string, format: uri }
+        events:
+          type: array
+          items: { type: string }
+        secret: { type: string, writeOnly: true }
+        status: { type: string, enum: [active, disabled], default: active }
+    WebhookDelivery:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        webhook_id: { type: string, format: uuid }
+        event_type: { type: string }
+        status: { type: string, enum: [pending, delivered, failed, retrying] }
+        attempt_count: { type: integer }
+        response_status: { type: [integer, "null"] }
+        delivered_at: { type: [string, "null"], format: date-time }
+
+    Alert:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        customer_id: { type: [string, "null"], format: uuid }
+        rule_id: { type: [string, "null"], format: uuid }
+        severity: { type: string, enum: [info, warning, critical] }
+        status: { type: string, enum: [open, acknowledged, resolved] }
+        message: { type: string }
+        triggered_at: { type: string, format: date-time }
+    AlertRule:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        name: { type: string }
+        metric: { type: string }
+        comparator: { type: string, enum: [gt, gte, lt, lte, eq] }
+        threshold: { $ref: "#/components/schemas/Decimal" }
+        status: { type: string, enum: [active, disabled] }
+        created_at: { type: string, format: date-time }
+    AlertRuleUpsert:
+      type: object
+      required: [name, metric, comparator, threshold]
+      properties:
+        name: { type: string }
+        metric: { type: string }
+        comparator: { type: string, enum: [gt, gte, lt, lte, eq] }
+        threshold: { $ref: "#/components/schemas/Decimal" }
+        status: { type: string, enum: [active, disabled], default: active }
+        notification_channels:
+          type: array
+          items: { type: string }
+
+    AuditEvent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        actor_id: { type: [string, "null"] }
+        action: { type: string }
+        resource_type: { type: string }
+        resource_id: { type: [string, "null"] }
+        metadata: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+    ComplianceEvidence:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        control_key: { type: string }
+        evidence_type: { type: string }
+        artifact_url: { type: [string, "null"], format: uri }
+        metadata: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+    GdprRequest:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        customer_id: { type: [string, "null"], format: uuid }
+        end_user_id: { type: [string, "null"], format: uuid }
+        request_type: { type: string, enum: [access, export, delete, rectify] }
+        status: { type: string, enum: [open, processing, completed, rejected] }
+        requested_by: { type: string }
+        created_at: { type: string, format: date-time }
+        completed_at: { type: [string, "null"], format: date-time }
+    WorkflowTask:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        task_type: { type: string }
+        resource_type: { type: string }
+        resource_id: { type: string }
+        status: { type: string, enum: [open, approved, rejected, canceled] }
+        assigned_role: { type: string }
+        created_at: { type: string, format: date-time }
+    WorkflowAction:
+      type: object
+      required: [action]
+      properties:
+        action: { type: string, enum: [approve, reject, cancel] }
+        reason: { type: string }
+
+    DeveloperPortalSummary:
+      type: object
+      properties:
+        org_id: { type: string, format: uuid }
+        active_api_key_count: { type: integer }
+        webhook_count: { type: integer }
+        rate_limit_policy_count: { type: integer }
+        last_request_at: { type: [string, "null"], format: date-time }
+    ApiKey:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        name: { type: string }
+        key_prefix: { type: string }
+        secret: { type: [string, "null"], writeOnly: true }
+        scopes:
+          type: array
+          items: { type: string }
+        status: { type: string, enum: [active, revoked] }
+        expires_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+    ApiKeyCreate:
+      type: object
+      required: [name, scopes]
+      properties:
+        name: { type: string }
+        scopes:
+          type: array
+          items: { type: string }
+        expires_at: { type: string, format: date-time }
+
+    EntitlementGrant:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        customer_id: { type: string, format: uuid }
+        feature_key: { type: string }
+        limit_value: { $ref: "#/components/schemas/Decimal" }
+        unit: { type: string }
+        status: { type: string, enum: [active, expired, revoked] }
+        starts_at: { type: string, format: date-time }
+        ends_at: { type: [string, "null"], format: date-time }
+    EntitlementGrantUpsert:
+      type: object
+      required: [feature_key, limit_value, unit]
+      properties:
+        feature_key: { type: string }
+        limit_value: { $ref: "#/components/schemas/Decimal" }
+        unit: { type: string }
+        starts_at: { type: string, format: date-time }
+        ends_at: { type: string, format: date-time }
+        status: { type: string, enum: [active, expired, revoked], default: active }
+
+    RateLimitPolicy:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        name: { type: string }
+        subject_type: { type: string, enum: [org, customer, end_user, api_key] }
+        status: { type: string, enum: [active, disabled] }
+        created_at: { type: string, format: date-time }
+    RateLimitPolicyUpsert:
+      type: object
+      required: [name, subject_type]
+      properties:
+        name: { type: string }
+        subject_type: { type: string, enum: [org, customer, end_user, api_key] }
+        status: { type: string, enum: [active, disabled], default: active }
+    RateLimitRule:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        policy_id: { type: string, format: uuid }
+        key: { type: string }
+        limit: { type: integer }
+        window_seconds: { type: integer }
+        burst_limit: { type: integer }
+    RateLimitRuleUpsert:
+      type: object
+      required: [key, limit, window_seconds]
+      properties:
+        key: { type: string }
+        limit: { type: integer, minimum: 1 }
+        window_seconds: { type: integer, minimum: 1 }
+        burst_limit: { type: integer, minimum: 1 }
+    RateLimitUsage:
+      type: object
+      properties:
+        org_id: { type: string, format: uuid }
+        subject_id: { type: string }
+        windows:
+          type: array
+          items:
+            type: object
+            properties:
+              key: { type: string }
+              remaining: { type: integer }
+              limit: { type: integer }
+              resets_at: { type: string, format: date-time }
+    RateLimitResetRequest:
+      type: object
+      required: [subject_id]
+      properties:
+        subject_id: { type: string }
+        key: { type: string }
+        reason: { type: string }
+
+    TaxConfig:
+      type: object
+      properties:
+        org_id: { type: string, format: uuid }
+        provider: { type: string, enum: [manual, stripe_tax, avalara] }
+        nexus_countries:
+          type: array
+          items: { type: string }
+        default_tax_rate: { $ref: "#/components/schemas/Decimal" }
+        tax_inclusive: { type: boolean }
+        updated_at: { type: string, format: date-time }
+    TaxExemption:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        customer_id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        certificate_id: { type: string }
+        reason: { type: string }
+        status:
+          type: string
+          enum: [pending, verified, rejected, active, expired, revoked]
+        expires_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+    TaxExemptionCreate:
+      type: object
+      required: [certificate_id, reason]
+      properties:
+        certificate_id: { type: string }
+        reason: { type: string }
+        expires_at: { type: string, format: date-time, nullable: true }
+    TaxExemptionUpdate:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [verified, rejected, revoked]
+        expires_at: { type: string, format: date-time, nullable: true }
+    CustomerTaxId:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        customer_id: { type: string, format: uuid }
+        tax_id_type: { type: string, description: "e.g. eu_vat, us_ein, in_gst" }
+        value: { type: string }
+        validation_status:
+          type: string
+          enum: [pending, valid, invalid]
+        validated_at: { type: string, format: date-time, nullable: true }
+    CustomerTaxIdUpsert:
+      type: object
+      required: [tax_id_type, value]
+      properties:
+        tax_id_type: { type: string }
+        value: { type: string }
+    CurrencyConfig:
+      type: object
+      properties:
+        org_id: { type: string, format: uuid }
+        base_currency: { type: string }
+        allowed_currencies:
+          type: array
+          items: { type: string }
+        fx_provider: { type: string, enum: [manual, open_exchange_rates, stripe] }
+        rounding_mode: { type: string, enum: [half_up, half_even, floor, ceiling] }
+        updated_at: { type: string, format: date-time }
+    CustomerPortalComposite:
+      type: object
+      properties:
+        customer: { $ref: "#/components/schemas/Customer" }
+        current_subscription:
+          oneOf:
+            - $ref: "#/components/schemas/Subscription"
+            - type: "null"
+        open_invoices:
+          type: array
+          items: { $ref: "#/components/schemas/Invoice" }
+        payment_methods:
+          type: array
+          items: { $ref: "#/components/schemas/PaymentMethod" }
+        wallet:
+          oneOf:
+            - $ref: "#/components/schemas/Wallet"
+            - type: "null"
+        credit_balance: { $ref: "#/components/schemas/Money" }
+        currency: { type: string }
+
+    AssistantMessage:
+      type: object
+      properties:
+        conversation_id: { type: string }
+        role: { type: string, enum: [user, assistant, tool] }
+        content: { type: string }
+        metadata: { type: object, additionalProperties: true }
+    AssistantChatRequest:
+      type: object
+      required: [message]
+      properties:
+        conversation_id: { type: string }
+        message: { type: string }
+        context:
+          type: object
+          properties:
+            org_id: { type: string, format: uuid }
+            customer_id: { type: string, format: uuid }
+            screen: { type: string }
+    Recommendation:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        recommendation_type: { type: string, enum: [pricing, churn, credits, dunning, rate_limit, tax] }
+        title: { type: string }
+        rationale: { type: string }
+        status: { type: string, enum: [open, applied, dismissed] }
+        estimated_revenue_impact: { $ref: "#/components/schemas/Money" }
+        currency: { type: string }
+        created_at: { type: string, format: date-time }
+    RecommendationAction:
+      type: object
+      properties:
+        note: { type: string }
+        parameters: { type: object, additionalProperties: true }

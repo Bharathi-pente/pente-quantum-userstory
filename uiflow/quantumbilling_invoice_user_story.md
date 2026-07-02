@@ -378,7 +378,7 @@ Line items are composed by the Go billing worker (ADR-001 §3); this story only 
 | **BASE_FEE** | Subscription + plan price, prorated | Enterprise Plan: $499/month |
 | **USAGE** | ClickHouse period aggregation × resolved rate (§3.3 waterfall) | GPT-4 Input Tokens: 156M @ contract rate |
 | **OVERAGE** | `max(0, usage − included units)` × overage rate | Overage Usage: $9,443.80 |
-| **COMMIT_TRUE_UP** | `max(0, commit_amount − period spend)` | Commit shortfall true-up: $2,000 |
+| **COMMIT_TRUE_UP** | `max(0, commit_amount − eligible spend over the contract term)`; eligible spend is USAGE + OVERAGE only, and this line appears only on the final invoice of the contract term | Commit shortfall true-up: $2,000 |
 | **SEAT** | Seat count × seat price, with seat-change proration (CR-3) | 25 seats × $20 |
 | **ADJUSTMENT** | Prior-period corrections: late/corrected events, proration deltas | Prior-period adjustment (Feb): $84.20 |
 

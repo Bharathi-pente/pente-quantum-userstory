@@ -118,7 +118,7 @@ There is exactly **one invoice generator: the Go billing worker.** At each subsc
    - **Plan base fee**: from subscription + plan price, prorated for mid-cycle changes (Postgres control plane)
    - **Usage charges**: per-meter aggregation over the anniversary window read from ClickHouse (period membership by `timestamp_ms`), rated via the waterfall below
    - **Overage**: `max(0, usage − included units)` × overage rate
-   - **Commit true-up**: `max(0, commit_amount − period spend)`
+   - **Commit true-up**: `max(0, commit_amount − eligible spend over the contract term)`, where eligible spend is USAGE + OVERAGE only; emit `COMMIT_TRUE_UP` only on the final invoice of the contract term
    - **Seats**: per-seat pricing with seat-change proration
    - **Adjustments**: prior-period corrections and late-arrival deltas
 3. **Rate resolution waterfall** per `(customer, meter, model, token_type)`, stopping at the first match: `contract_rates` → the contract's pinned `rate_card_version` entry → the plan charge's pricing model → **unrated** (flagged on a rating-exceptions report — never silently dropped, never billed at an implicit zero). The resolved rate source is recorded on each line item.

@@ -98,7 +98,7 @@ Given the same inputs, the worker reproduces the same invoice byte-for-byte. No 
 |---|---|
 | 18 | The **subscription anniversary defines the period window** — not the calendar month. An anniversary-scan cron finds subscriptions whose `current_period_end` has passed and opens an invoice run for exactly that per-subscription window |
 | 19 | Period membership is decided by `timestamp_ms` (when the call happened), not `ingested_at`. Late arrivals are handled by re-rating (CR-1), not by holding invoices open indefinitely |
-| 20 | Invoice is generated as `draft` at anniversary + grace window (24–48h, `INVOICE_GRACE_HOURS`), then finalized to `pending` |
+| 20 | Invoice is opened/generated as `draft` at the subscription period end; during `[period_end, period_end + INVOICE_GRACE_HOURS)` (24–48h, default 36h), late arrivals with in-period `timestamp_ms` update the draft; at grace expiry the draft finalizes to `pending` |
 | 21 | Events landing after finalization become a prior-period `ADJUSTMENT` line on the next invoice, or a credit note — issued invoices are never mutated |
 | 22 | Redis enforcement counters for the customer are reset at the anniversary boundary as part of the same run |
 
@@ -108,7 +108,7 @@ Given the same inputs, the worker reproduces the same invoice byte-for-byte. No 
 |---|---|
 | 23 | Query ClickHouse for aggregated usage: `SELECT org_id, customer_id, end_user_id, model, sum(total_tokens), sum(cost) FROM usage_events_dedup_v WHERE timestamp_ms BETWEEN ? AND ? GROUP BY ...` — window bounds are the subscription's anniversary period; record the read watermark as `aggregation_watermark` on the invoice |
 | 24 | Read `customer.subscriptions`, `catalog.plans`, and `catalog.plan_versions` from control-plane Postgres for the base fee, billing period, seat config, and included-unit allowances |
-| 25 | Compose typed line items: `BASE_FEE` (plan price, prorated), `USAGE` (per-meter aggregation × rate), `OVERAGE` (`max(0, usage − included_units)` × overage rate), `COMMIT_TRUE_UP` (`max(0, commit_amount − period spend)`), `SEAT` (seat count × seat price, prorated on seat changes), `ADJUSTMENT` (prior-period corrections) |
+| 25 | Compose typed line items: `BASE_FEE` (plan price, prorated), `USAGE` (per-meter aggregation × rate), `OVERAGE` (`max(0, usage − included_units)` × overage rate), `COMMIT_TRUE_UP` (`max(0, commit_amount − eligible spend over the contract term)`, USAGE + OVERAGE only, emitted only on the final invoice of the term), `SEAT` (seat count × seat price, prorated on seat changes), `ADJUSTMENT` (prior-period corrections) |
 | 26 | **Proration:** mid-cycle plan changes prorate both the base fee and the included-unit allowance. The worker rates each sub-window of the period against the plan version active during it (from `catalog.plan_versions`); cancellation policy (immediate vs. end-of-period, refund treatment) is per plan |
 | 27 | **Rate resolution waterfall** per `(customer, meter, model, token_type)`, stopping at the first match: (1) `billing.contract_rates` → (2) the contract's pinned `catalog.rate_card_versions` entry → (3) the subscription plan's charge → `catalog.pricing_models` → (4) **unrated**: flagged on the rating-exceptions report, never silently dropped and never billed at an implicit zero |
 | 28 | Record `rate_source` (`contract_rate` \| `rate_card_version` \| `pricing_model`) and `rate_source_id` on every line item |
@@ -355,7 +355,7 @@ Canonical schemas per [ERD.md](../ERD.md). **One-writer rule (ADR-001 §2):** th
 | `CLICKHOUSE_DATABASE` | ClickHouse database | `events` |
 | `PORT` | HTTP listen port | `8031` |
 | `ANNIVERSARY_SCAN_CRON` | Cron for the subscription anniversary scan (finds periods that closed) | `0 * * * *` (hourly) |
-| `INVOICE_GRACE_HOURS` | Draft → finalize grace window after anniversary | `36` (range 24–48) |
+| `INVOICE_GRACE_HOURS` | Draft → finalize grace window after period end | `36` (range 24–48) |
 | `DUNNING_CRON_SCHEDULE` | Cron expression for dunning checks | `0 */6 * * *` (every 6 hours) |
 | `RECONCILIATION_CRON` | Nightly Redis ↔ ClickHouse counter/wallet reconciliation | `0 2 * * *` |
 | `WALLET_GRACE_AMOUNT` | Negative balance allowed before hard block (CR-2) | `0` |
@@ -474,7 +474,7 @@ Stories 25–35 are standalone files (authored per ADR-001); stories 36–40 are
 - [ ] Credit ledger records every consumption with invoice_id
 - [ ] Invoice generation: anniversary-window ClickHouse aggregation by `timestamp_ms`, pure invoice function
 - [ ] Input snapshots stored per invoice: rate_card_version_id, plan_version_id, aggregation_watermark
-- [ ] Draft at anniversary + grace (24–48h) → finalize to pending; post-finalization events → ADJUSTMENT line or credit note
+- [ ] Draft opened at period end, updated by in-period late arrivals during grace (24–48h), → finalize to pending at grace expiry; post-finalization events → ADJUSTMENT line or credit note
 - [ ] Billing groups: customer/organization consolidation with per-line subscription attribution
 - [ ] Invoice state machine: draft→pending→paid | overdue→voided; issued invoices never mutated
 - [ ] Auto-collection on finalization via default Stripe method; retries feed dunning

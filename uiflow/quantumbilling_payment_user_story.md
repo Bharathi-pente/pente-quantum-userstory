@@ -162,7 +162,7 @@ Key capabilities:
 
 **Given:** invoice has 3 payments
 **When:** GET `/api/v1/payments?invoice_uuid=INV-001-uuid&page=1&limit=10`
-**Then:** 200 returned, 3 payment objects in `items`, `totalCount=3`, `hasNextPage=false`
+**Then:** 200 returned, 3 payment objects in `items`, `total_count=3`, `has_next_page=false`
 
 ---
 
@@ -207,7 +207,7 @@ List payments for the org, optionally filtered by invoice, customer, or collecti
 
 - **Auth:** JWT · Guard: `AuthenticatedGuard`
 - **Query:** `?invoice_uuid=<uuid>&customer_uuid=<uuid>&status=completed&collection_mode=auto_charge&page=1&limit=20`
-- **Response:** 200 `{items: [...], totalCount, page, limit, hasNextPage}`
+- **Response:** 200 `{items: [...], total_count, page, limit, has_next_page}`
 
 ---
 
@@ -234,7 +234,7 @@ Update reconciliation status for a payment.
 List all active payment methods for a customer.
 
 - **Auth:** JWT · Guard: `OrgMemberGuard`
-- **Response:** 200 `{items: [{payment_method_id, method_type, brand, last4, exp_month, exp_year, billing_name, billing_address, is_default, status, created_at}], totalCount}`
+- **Response:** 200 `{items: [{payment_method_id, method_type, brand, last4, exp_month, exp_year, billing_name, billing_address, is_default, status, created_at}], total_count}`
 
 ---
 

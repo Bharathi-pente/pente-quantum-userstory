@@ -29,7 +29,7 @@
 
 ## Description
 
-Based on `platform.audit_logs`, `audit.security_audit_logs`, `compliance.compliance_reports`, `compliance.gdpr_requests`, `compliance.data_retention_policies`, `compliance.discrepancies`, and the `workflow` tables. Audit logging is consolidated per conflict C-7: exactly two audit tables — `platform.audit_logs` (actor actions) and `audit.security_audit_logs` (security violations); `compliance.*` holds GDPR/framework artifacts only, not a third general log. This module provides the complete audit trail, compliance reporting, GDPR data subject request handling, and data retention enforcement that QuantumBilling requires to operate as a regulated billing platform.
+Based on `platform.audit_logs`, `audit.security_audit_logs`, `compliance.compliance_reports`, `compliance.gdpr_requests`, `compliance.data_retention_policies`, `compliance.discrepancies`, and the `workflow` tables. Audit logging is consolidated per conflict C-7: exactly two audit tables — actor operations in `platform.audit_logs` and security violations in `audit.security_audit_logs`; `compliance.*` holds GDPR/framework artifacts only, not a third general log. This module provides the complete audit trail, compliance reporting, GDPR data subject request handling, and data retention enforcement that QuantumBilling requires to operate as a regulated billing platform.
 
 > **As an ORG_ADMIN**, I want a comprehensive, tamper-evident audit trail of all actions taken in the platform, the ability to run compliance reports against frameworks (SOC 2, ISO 27001, GDPR), manage GDPR data subject requests, configure data retention policies, and track financial discrepancies, so that QuantumBilling meets enterprise governance requirements and my organization can pass external audits.
 
@@ -92,7 +92,7 @@ List audit log entries with pagination and filters.
 
 - **Auth:** JWT · Guard: `OrgAdminGuard` / `SuperAdminGuard`
 - **Query:** `?resource_type=invoice&action=created&actor_id=<uuid>&ip_address=1.2.3.4&status=SUCCESS&from=2026-01-01T00:00:00Z&to=2026-06-30T23:59:59Z&page=1&limit=50`
-- **Response:** 200 `{items: [{id, org_id, user_id, action, resource_type, resource_id, old_value, new_value, ip_address, user_agent, status, created_at}], totalCount, page, limit, hasNextPage}`
+- **Response:** 200 `{items: [{id, org_id, user_id, action, resource_type, resource_id, old_value, new_value, ip_address, user_agent, status, created_at}], total_count, page, limit, has_next_page}`
 
 #### GET `/api/v1/audit-logs/:auditLogId`
 
@@ -118,14 +118,14 @@ List security audit log entries.
 
 - **Auth:** JWT · Guard: `OrgAdminGuard` / `SuperAdminGuard`
 - **Query:** `?violation_type=RBAC_DENIAL&page=1&limit=50`
-- **Response:** 200 `{items: [{id, org_id, violation_type, api_key_id, customer_id, ip_address, details, created_at}], totalCount, page, limit, hasNextPage}`
+- **Response:** 200 `{items: [{id, org_id, violation_type, api_key_id, customer_id, ip_address, details, created_at}], total_count, page, limit, has_next_page}`
 
 #### GET `/api/v1/api-keys/:apiKeyId/audit-logs`
 
 List all audit events for a specific API key (a filtered read of `platform.audit_logs` where `resource_type = 'api_key'`).
 
 - **Auth:** JWT · Guard: `OrgAdminGuard`
-- **Response:** 200 `{items: [{id, resource_id, action, old_value, new_value, user_id, created_at}], totalCount}`
+- **Response:** 200 `{items: [{id, resource_id, action, old_value, new_value, user_id, created_at}], total_count}`
 
 ---
 
@@ -162,7 +162,7 @@ List compliance reports.
 
 - **Auth:** JWT · Guard: `OrgAdminGuard`
 - **Query:** `?framework=SOC2&status=READY&page=1&limit=20`
-- **Response:** 200 `{items: [{id, framework, report_type, status, findings_count, last_audit_date, next_audit_date, created_at}], totalCount, page, limit, hasNextPage}`
+- **Response:** 200 `{items: [{id, framework, report_type, status, findings_count, last_audit_date, next_audit_date, created_at}], total_count, page, limit, has_next_page}`
 
 #### GET `/api/v1/compliance-reports/:reportId`
 
@@ -215,7 +215,7 @@ List GDPR requests for the org.
 
 - **Auth:** JWT · Guard: `OrgAdminGuard`
 - **Query:** `?customer_id=<uuid>&status=PENDING&page=1&limit=20`
-- **Response:** 200 `{items: [{id, customer_id, customer_email, request_type, status, data_size, requested_at, completed_at, created_at}], totalCount, page, limit, hasNextPage}`
+- **Response:** 200 `{items: [{id, customer_id, customer_email, request_type, status, data_size, requested_at, completed_at, created_at}], total_count, page, limit, has_next_page}`
 
 #### GET `/api/v1/gdpr-requests/:requestId`
 
@@ -326,7 +326,7 @@ List discrepancies.
 
 - **Auth:** JWT · Guard: `OrgAdminGuard` / `SuperAdminGuard`
 - **Query:** `?disc_type=FINANCIAL&status=OPEN&customer_id=<uuid>&page=1&limit=20`
-- **Response:** 200 `{items: [{id, customer_id, org_id, disc_type, description, financial_impact, status, detected_at, resolution, created_at}], totalCount, page, limit, hasNextPage}`
+- **Response:** 200 `{items: [{id, customer_id, org_id, disc_type, description, financial_impact, status, detected_at, resolution, created_at}], total_count, page, limit, has_next_page}`
 
 #### GET `/api/v1/discrepancies/:discrepancyId`
 
@@ -402,7 +402,7 @@ List approval requests for the current user (as requester or approver).
 
 - **Auth:** JWT · Guard: `OrgAdminGuard`
 - **Query:** `?status=PENDING&as=approver&page=1&limit=20`
-- **Response:** 200 `{items: [{id, workflow_id, resource_type, resource_id, status, current_step_id, submitted_at}], totalCount, page, limit, hasNextPage}`
+- **Response:** 200 `{items: [{id, workflow_id, resource_type, resource_id, status, current_step_id, submitted_at}], total_count, page, limit, has_next_page}`
 
 #### GET `/api/v1/approval-requests/:requestId`
 
@@ -535,5 +535,5 @@ Accessible from **My Work › Approval Requests** or from the notification badge
 - **Purge job safety:** The Postgres data retention purge job must run inside a transaction per data type. It must log the count of records purged and update `last_purge_at` atomically. Use batch deletes (LIMIT 1000) to avoid lock contention on large tables. Skip tables that are under legal hold. **Usage data is out of scope for this job:** `usage_events` retention is a ClickHouse concern — monthly TTL / `DROP PARTITION` on `events.usage_events` (partitioned `toYYYYMM`), executed by the Go analytics worker; the control plane only records the policy and surfaces `last_purge_at`.
 - **Approval workflow as gate:** The approval workflow wraps an existing operation — it does not replace it. For example, when a credit note issuance requires approval, the credit note is created with `status = PENDING_APPROVAL` and only transitioned to `ISSUED` after the workflow is APPROVED.
 - **Prisma enums:** `audit_log_status { SUCCESS FAILURE }`; `gdpr_request_status { PENDING IN_PROGRESS COMPLETED PARTIAL REJECTED }`; `discrepancy_status { OPEN INVESTIGATING RESOLVED WRITTEN_OFF }`; `approval_workflow_status { ACTIVE INACTIVE }`; `approval_step_status { PENDING APPROVED REJECTED SKIPPED }`; `approval_request_status { PENDING APPROVED REJECTED CANCELLED }`.
-- **Audit log correlation:** All three audit log tables share `org_id + created_at` as the primary query pattern. Composite indexes must cover: `(org_id, created_at)`, `(org_id, resource_type, created_at)`, `(org_id, user_id, created_at)`.
+- **Audit log correlation:** Both audit tables share `org_id + created_at` as the primary query pattern, so each needs an `(org_id, created_at)` index. Beyond that the two tables have distinct columns and distinct composite indexes: `platform.audit_logs` (actor actions) uses `(org_id, resource_type, created_at)` and `(org_id, user_id, created_at)`; `audit.security_audit_logs` (security violations) uses `(org_id, violation_type, created_at)`, `(org_id, api_key_id, created_at)`, and `(org_id, customer_id, created_at)`. Compliance tables hold GDPR/framework artifacts and are indexed separately.
 - **Sensitive field masking in logs:** Never log password fields, full credit card numbers, API secret values, or bcrypt hashes in `old_value`/`new_value`. Strip these at the service layer before passing to `AuditService.log()`.

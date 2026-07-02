@@ -50,7 +50,7 @@ Key capabilities:
 
 2. Org record is inserted into `identity.organizations` with `status = ACTIVE` (enum `ACTIVE | SUSPENDED | DELETED` and nullable `suspended_at`, per ERD.md §1 / conflict C-14). All `identity.users` linked to this org via `org_id` retain their sessions.
 
-3. SUPER_ADMIN can list all orgs with pagination (`?page=1&limit=20`), sorted by `created_at` DESC. Response includes `totalCount`, `hasNextPage`, and per-org: id, name, billing_email, currency, country, member_count, created_at.
+3. SUPER_ADMIN can list all orgs with pagination (`?page=1&limit=20`), sorted by `created_at` DESC. Response includes `total_count`, `has_next_page`, and per-org: id, name, billing_email, currency, country, member_count, created_at.
 
 4. SUPER_ADMIN can update an org's `name`, `billing_email`, `currency`, `country`, `industry`, and `timezone` via `PATCH /api/v1/orgs/:orgId`.
 

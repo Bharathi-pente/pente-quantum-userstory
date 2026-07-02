@@ -74,7 +74,7 @@ State transitions: `ACTIVE → SUSPENDED → CHURNED` (terminal); `SUSPENDED →
 
 - Given: 25 customers exist for `org_id = 1`
 - When: GET `/api/v1/customers?status=ACTIVE&product_id=10&page=2&limit=10`
-- Then: `200` returned with items 11–20, `totalCount = 25`, `hasNextPage = true`
+- Then: `200` returned with items 11–20, `total_count = 25`, `has_next_page = true`
 
 ---
 
@@ -294,4 +294,4 @@ State transitions: `ACTIVE → SUSPENDED → CHURNED` (terminal); `SUSPENDED →
 - `credit_ledger` insert is authoritative — `customer.credit_balance` is updated within the same transaction.
 - Pagination: use cursor-based or offset pagination with `page` and `limit` query params.
 - SUPER_ADMIN bypass: check `X-SUPER-ADMIN: true` header or `actor.role === SUPER_ADMIN` before OrgAdminGuard.
-- API response envelope: `{ "data": T, "meta": { "totalCount": number, "page": number, "limit": number, "hasNextPage": boolean } }` for lists.
+- API response envelope: `{ "data": T, "meta": { "total_count": number, "page": number, "limit": number, "has_next_page": boolean } }` for lists.

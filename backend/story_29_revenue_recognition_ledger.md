@@ -33,7 +33,7 @@ This story implements `billing.revenue_recognition_ledger` (ERD §4) and the rec
 | 4 | **Consumption recognition:** a scheduled recognition run aggregates, per customer and day, (a) prepaid-credit burndown from `billing.credit_ledger` (type `usage` rows against `prepaid`/`commit` credits) and (b) wallet burndown from `billing.wallet_transactions` (type `burndown`), and books matching `entry_type = recognition` entries (`source_type = credit` / `wallet_transaction`). | Rated amounts come from the same rating waterfall (ADR-001 §3.3) the invoice engine uses; ClickHouse `usage_events_dedup_v` (by `timestamp_ms`) is the usage source of truth the burndown reconciles against. Recognition for a `source_id` never exceeds its cumulative deferral. |
 | 5 | **Base-fee recognition:** each subscription's `BASE_FEE` line recognizes ratably (straight-line, daily) over the anniversary-aligned service period (ADR-001 §3.1) — not lump-sum at invoicing. `pay_in_advance` plans carry a deferral at finalization that unwinds daily; arrears plans recognize into the period being closed. | Mid-cycle plan changes recognize each prorated sub-window against its `plan_version` amount, mirroring §3.2 proration. `source_type = invoice`, `source_id` = the invoice ID. |
 | 6 | **Postpaid usage** invoiced in arrears recognizes in the period the usage occurred (`timestamp_ms` period membership), booked when the invoice finalizes; no deferral leg is needed. | Prior-period `ADJUSTMENT` lines and credit notes (CR-1/CR-4) book signed recognition entries in the **current open period** — closed periods are never restated (see criterion 9). |
-| 7 | **Commit true-ups:** at each contract period close, `COMMIT_TRUE_UP` line amounts (`max(0, commit_amount − period spend)`) book `entry_type = true_up` entries, recognizing the unconsumed committed amount as breakage per the contract's terms. | `source_type = invoice`; the entry links to the invoice carrying the true-up line. |
+| 7 | **Commit true-ups:** only on the final invoice of the contract term, `COMMIT_TRUE_UP` line amounts (`max(0, commit_amount − eligible spend over the contract term)`, where eligible spend is USAGE + OVERAGE only) book `entry_type = true_up` entries, recognizing the unconsumed committed amount as breakage per the contract's terms. | `source_type = invoice`; the entry links to the final term invoice carrying the true-up line. |
 | 8 | Recognition runs are **idempotent**: re-running a period recomputes deterministically from immutable inputs (credit ledger, wallet transactions, invoice snapshots per §3.4) and upserts by natural key (`source_type`, `source_id`, `entry_type`, `recognition_period`) — never duplicating entries. | The §3.4 purity invariant extends to the ledger: same inputs, same entries, byte-for-byte. |
 
 ### Period Close & Reporting
@@ -81,8 +81,8 @@ This story implements `billing.revenue_recognition_ledger` (ERD §4) and the rec
 * **When**: The period closes.
 * **Then**: Recognition follows the prorated sub-windows (40% at the Plan A daily rate, 60% at Plan B), matching the invoice's `BASE_FEE` lines exactly.
 
-### TC-06: Commit true-up at contract period close
-* **Given**: Contract with $10,000 commit; period spend is $7,500; the invoice carries a $2,500 `COMMIT_TRUE_UP` line.
+### TC-06: Commit true-up on final contract-term invoice
+* **Given**: Contract with $10,000 commit; contract-term eligible spend (USAGE + OVERAGE only) is $7,500; the final invoice of the contract term carries a $2,500 `COMMIT_TRUE_UP` line.
 * **When**: Period close runs.
 * **Then**: A `true_up` entry for $2,500 is booked, linked to the invoice; the commit deferral drains to zero.
 

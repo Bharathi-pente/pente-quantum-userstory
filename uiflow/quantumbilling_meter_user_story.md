@@ -135,7 +135,7 @@ Key capabilities:
 
 **Given:** 50 events exist for this meter in ClickHouse (`events.usage_events_dedup_v`)
 **When:** GET `/api/v1/meters/:meterId/events?page=2&limit=10&from=2026-06-01T00:00:00Z&to=2026-06-30T23:59:59Z`
-**Then:** 200 returned via the BFF proxy to the Go phase-4 APIs, 10 events (items 11-20), includes `totalCount=50`, `hasNextPage=true`
+**Then:** 200 returned via the BFF proxy to the Go phase-4 APIs, 10 events (items 11-20), includes `total_count=50`, `has_next_page=true`
 
 ---
 
@@ -146,7 +146,7 @@ Create a new meter for the authenticated org.
 
 - **Auth:** JWT · Guard: `OrgAdminGuard`
 - **Body:** `{name, event_type, aggregation, field?}`
-- **Response:** 201 `{meterId, name, event_type, aggregation, field, status: "DRAFT", createdAt}`
+- **Response:** 201 `{meterId, name, event_type, aggregation, field, status: "DRAFT", created_at}`
 
 ---
 
@@ -155,7 +155,7 @@ List all meters for the org (or all orgs for SUPER_ADMIN).
 
 - **Auth:** JWT · Guard: `AuthenticatedGuard`
 - **Query:** `?status=ACTIVE&page=1&limit=20`
-- **Response:** 200 `{items: [...], totalCount, page, limit, hasNextPage}`
+- **Response:** 200 `{items: [...], total_count, page, limit, has_next_page}`
 
 ---
 
@@ -163,7 +163,7 @@ List all meters for the org (or all orgs for SUPER_ADMIN).
 Get full details of a single meter.
 
 - **Auth:** JWT · Guard: `OrgMemberGuard`
-- **Response:** 200 `{meterId, name, event_type, aggregation, field, status, lastEventAt, createdAt, updatedAt}`
+- **Response:** 200 `{meterId, name, event_type, aggregation, field, status, lastEventAt, created_at, updatedAt}`
 
 ---
 
@@ -202,7 +202,7 @@ List ingested events with pagination and date range filter. Served by the NestJS
 
 - **Auth:** JWT · Guard: `OrgAdminGuard`
 - **Query:** `?page=1&limit=20&from=ISO8601&to=ISO8601`
-- **Response:** 200 `{items: [{id, value, timestamp, idempotency_key, createdAt}], totalCount, page, limit, hasNextPage}`
+- **Response:** 200 `{items: [{id, value, timestamp, idempotency_key, created_at}], total_count, page, limit, has_next_page}`
 
 ---
 

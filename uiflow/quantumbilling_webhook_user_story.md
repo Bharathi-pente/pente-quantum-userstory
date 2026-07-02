@@ -194,8 +194,8 @@ Key capabilities:
 
 **Given:** webhook has 50 delivery log entries
 **When:** GET `/api/v1/webhooks/:webhookId/deliveries?page=2&limit=10`
-**Then:** 200 returned, 10 log entries (items 11-20), includes `totalCount=50`, `hasNextPage=true`
-**And:** each entry includes `eventId`, `eventType`, `responseStatus`, `attemptNumber`, `deliveredAt`
+**Then:** 200 returned, 10 log entries (items 11-20), includes `total_count=50`, `has_next_page=true`
+**And:** each entry includes `event_id`, `event_type`, `response_status`, `attempt_number`, `delivered_at`
 
 ---
 
@@ -222,7 +222,7 @@ Create a new webhook for the authenticated org.
 
 - **Auth:** JWT · Guard: `OrgAdminGuard`
 - **Body:** `{name, url, events[], metadata?}`
-- **Response:** 201 `{webhookId, name, url, events, status: "ACTIVE", metadata, createdAt}`
+- **Response:** 201 `{webhookId, name, url, events, status: "ACTIVE", metadata, created_at}`
 - **Secret response:** `secret` is returned once in the creation response only
 - **Errors:** 422 `WEBHOOK_HTTP_NOT_ALLOWED`, 422 `WEBHOOK_INVALID_EVENT_TYPE`, 422 `WEBHOOK_URL_UNREACHABLE`
 
@@ -233,7 +233,7 @@ List all webhooks for the org (or all orgs for SUPER_ADMIN).
 
 - **Auth:** JWT · Guard: `AuthenticatedGuard`
 - **Query:** `?status=ACTIVE&page=1&limit=20`
-- **Response:** 200 `{items: [...], totalCount, page, limit, hasNextPage}` — items do not include `secret`
+- **Response:** 200 `{items: [...], total_count, page, limit, has_next_page}` — items do not include `secret`
 
 ---
 
@@ -241,7 +241,7 @@ List all webhooks for the org (or all orgs for SUPER_ADMIN).
 Get full details of a single webhook (secret is never returned).
 
 - **Auth:** JWT · Guard: `OrgMemberGuard`
-- **Response:** 200 `{webhookId, name, url, events, status, metadata, createdAt, updatedAt}`
+- **Response:** 200 `{webhookId, name, url, events, status, metadata, created_at, updatedAt}`
 - **Errors:** 404 `WEBHOOK_NOT_FOUND`
 
 ---
@@ -279,7 +279,7 @@ List delivery log entries for a webhook with pagination.
 
 - **Auth:** JWT · Guard: `OrgAdminGuard`
 - **Query:** `?page=1&limit=20&status=FAILED`
-- **Response:** 200 `{items: [{eventId, eventType, responseStatus, attemptNumber, errorMessage, createdAt, deliveredAt}], totalCount, page, limit, hasNextPage}`
+- **Response:** 200 `{items: [{event_id, event_type, response_status, attempt_number, error_message, created_at, delivered_at}], total_count, page, limit, has_next_page}`
 
 ---
 
@@ -288,7 +288,7 @@ Send a test event to the webhook endpoint to verify connectivity and signature v
 
 - **Auth:** JWT · Guard: `OrgAdminGuard`
 - **Body:** `{event_type?: "test.event"}` (optional, defaults to `test.event`)
-- **Response:** 200 `{success: true, responseStatus: 200, responseTimeMs: 145}`
+- **Response:** 200 `{success: true, response_status: 200, responseTimeMs: 145}`
 - **Errors:** 404 `WEBHOOK_NOT_FOUND`, 422 `WEBHOOK_DELIVERY_FAILED` (if endpoint does not return 2xx)
 
 ---
@@ -324,7 +324,7 @@ signature = "sha256=" + HMAC-SHA256(webhook_secret, signature_payload)
 
 | Response | Action |
 |----------|--------|
-| 2xx | Mark `DELIVERED`, record `responseStatus`, `deliveredAt` |
+| 2xx | Mark `DELIVERED`, record `response_status`, `delivered_at` |
 | 4xx | Mark `FAILED` with reason `CLIENT_ERROR`, no retry |
 | 5xx | Mark `RETRYING`, schedule retry with backoff |
 | Timeout | Mark `RETRYING`, schedule retry with backoff |

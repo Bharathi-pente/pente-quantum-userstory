@@ -43,7 +43,7 @@ BYOK (Bring Your Own Key) allows organizations to store and manage their own enc
 - **Provider Support**: OpenAI, Anthropic, Google (Vertex AI), AWS, Azure, and custom providers via `virtual_key_provider` enum
 - **Key Rotation**: BYOK keys can be rotated without changing the virtual key mapping
 - **Status Management**: Virtual keys and BYOK keys can be activated, suspended, or revoked
-- **Audit Logging**: All key creation, rotation, and revocation events logged to `audit.security_audit_logs`
+- **Audit Logging**: All key creation, update, deletion, and rotation actor actions logged to `platform.audit_logs` (C-7); `audit.security_audit_logs` receives security violations only (invalid key, budget_exhausted, rate_limit, guardrail_blocked, failed auth/RBAC)
 - **SUPER_ADMIN** can manage any org's virtual keys and BYOK keys
 
 ---
@@ -99,7 +99,7 @@ BYOK (Bring Your Own Key) allows organizations to store and manage their own enc
 
 ### Security & Audit
 
-19. All virtual key and BYOK key operations (create, update, delete, rotate) are written to `audit.security_audit_logs` with actor_id, action, resource_id, and metadata.
+19. All virtual key and BYOK key actor actions (create, update, delete, rotate) are written to `platform.audit_logs` with `user_id`, `action`, `resource_type`, `resource_id`, `old_value`/`new_value`, status, and request context. `audit.security_audit_logs` is reserved for security violations only: invalid key, budget_exhausted, rate_limit, guardrail_blocked, failed authentication, RBAC denials, and other security events.
 20. Raw BYOK key values are never logged — only `key_reference` (the provider's key identifier) is logged.
 21. BYOK keys with `provider = custom` allow orgs to integrate with any HTTP-based API provider.
 
@@ -235,7 +235,8 @@ BYOK (Bring Your Own Key) allows organizations to store and manage their own enc
 | `api_keys` | `developer` | SELECT | `id, org_id, customer_id, end_user_id, name, key_hash, key_prefix, source_mode, budget_limit_usd, rate_limit_rpm, rate_limit_tpm, allowed_models, status, revoked_at` |
 | `identity.organizations` | `identity` | SELECT | `id, name` |
 | `identity.users` | `identity` | SELECT | `id, org_id` |
-| `audit.security_audit_logs` | `audit` | INSERT | `id, actor_id, action, resource_id, org_id, metadata, created_at` |
+| `platform.audit_logs` | `platform` | INSERT | `id, org_id, user_id, action, resource_type, resource_id, old_value, new_value, ip_address, user_agent, status, created_at` |
+| `audit.security_audit_logs` | `audit` | INSERT | `id, org_id, api_key_id, customer_id, violation_type, ip_address, details, triggered_by, created_at` — security violations only |
 
 ### Table Schemas (Source of Truth)
 
@@ -346,7 +347,7 @@ active
 | `BYOK_PROVIDER_ALLOWED` | Comma-separated list of allowed providers (default: `openai,anthropic,google,aws,azure,custom`) |
 | `VIRTUAL_KEY_LOOKUP_CACHE_TTL_SEC` | TTL for caching virtual key mappings in gateway (default: 60) |
 | `KEY_REFERENCE_HASH_ALGO` | Hash algorithm for `key_hash` field (default: `sha256`) |
-| `AUDIT_LOG_ENABLED` | Boolean — write all BYOK/virtual key operations to `audit.security_audit_logs` (default: true) |
+| `AUDIT_LOG_ENABLED` | Boolean — write BYOK/virtual key actor actions to `platform.audit_logs` and security violations to `audit.security_audit_logs` (default: true) |
 | `DATABASE_URL` | PostgreSQL connection string (Prisma) |
 | `KEYCLOAK_URL` | Keycloak server base URL |
 | `KEYCLOAK_REALM` | `quantumbilling` |
@@ -437,7 +438,7 @@ QuantumBilling API Key (developer.api_keys)
 - **BYOK key material**: QuantumBilling NEVER stores raw API keys. Only `key_reference` (the provider's key identifier or an encrypted reference) is stored. Where an encrypted reference is held (`encrypted_key`, AES-256-GCM with a unique 12-byte `key_iv`), the data-encryption key MUST be wrapped via KMS/Vault envelope encryption in production (ADR-001 §7) — a raw env-var master key with a local fallback is acceptable for development only.
 - **Key hashing**: Before storing a key reference, hash it with `KEY_REFERENCE_HASH_ALGO` (default SHA-256) and store the hash in `key_hash` for deduplication. Never store the raw reference in logs.
 - **Provider validation**: When `provider = custom`, the `key_reference` should be a URL or identifier that the gateway uses to route requests to the customer's custom endpoint.
-- **Audit**: Every create/update/delete on `virtual_key_mappings` and `security.byok_provider_keys` must write to `audit.security_audit_logs`. Mask `key_reference` in logs — log only `key_hash` for correlation.
+- **Audit**: Every create/update/delete actor action on `virtual_key_mappings` and `security.byok_provider_keys` must write to `platform.audit_logs` (C-7). Security violations such as invalid key use, budget exhaustion, rate limiting, guardrail blocks, failed authentication, and RBAC denials write to `audit.security_audit_logs`. Mask `key_reference` in logs — log only `key_hash` for correlation.
 
 ### Prisma Models
 

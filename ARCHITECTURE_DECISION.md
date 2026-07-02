@@ -1,7 +1,7 @@
 # ADR-001: Unified Billing Architecture for QuantumBilling
 
-**Status:** Proposed
-**Date:** 2026-07-01
+**Status:** v1.2 — Accepted / reconciled with BUILD_PLAN, DISPATCH, and ERD
+**Date:** 2026-07-02
 **Scope:** Reconciles the `backend/` (Go event engine) and `uiflow/` (NestJS control plane) specifications into one architecture; defines the hybrid subscription + usage billing model; elevates market-parity capabilities to core requirements.
 
 ---
@@ -13,7 +13,7 @@ The `backend/` and `uiflow/` story sets describe **two complete, independent, co
 ### 1.1 What the backend docs specify
 
 - Ingestion: LiteLLM callback → Go ingest API → Kafka (`usage-events`, 32 partitions, keyed by `org_id`) → Go analytics worker → ClickHouse `events.usage_events` (`ReplacingMergeTree(ingested_at)`, `ORDER BY (org_id, tenant_id, event_id)`), with the `argMax` dedup view `events.usage_events_dedup_v` (`story_6:37-48`, `story_9:37-62`).
-- All 17 analytics endpoints (phase 4, stories 15–19) read **exclusively** from the ClickHouse dedup view; none touches Postgres or Redis (`phase_4:38`).
+- All 18 analytics endpoints (phase 4, stories 15–19) read **exclusively** from the ClickHouse dedup view; none touches Postgres or Redis (`phase_4:38`).
 - Invoicing authority is explicit: *"Redis counters are NOT the source of truth for billing... ClickHouse is the auditable source of truth for invoice generation"* (`phase_2:275`). The Go billing worker keeps Redis counters for sub-5ms enforcement and reconciles them nightly against ClickHouse.
 - Zero references to the uiflow layer, a "UI database," or any Postgres usage sync.
 
@@ -48,7 +48,7 @@ The `backend/` and `uiflow/` story sets describe **two complete, independent, co
 Concretely:
 
 1. **Delete `billing.usage_events` from the Prisma schema.** No raw usage rows in the control plane.
-2. **Dashboards read usage by proxying the Go phase-4 analytics APIs.** NestJS acts as BFF: it validates the Keycloak JWT, derives `org_id`/`tenant_id` scope, and forwards to the Go APIs. This also closes the backend's open question of a phase-4 auth mechanism (`phase_4:27-31` defines RBAC roles but no token scheme): **phase-4 APIs accept service-to-service auth from the NestJS BFF, which carries the resolved scope.**
+2. **Dashboards read usage by proxying the Go phase-4 analytics APIs.** NestJS acts as BFF: it validates the Keycloak JWT, derives `org_id`/`customer_id`/`end_user_id` scope, and forwards to the Go APIs. This also closes the backend's open question of a phase-4 auth mechanism (`phase_4:27-31` defines RBAC roles but no token scheme): **phase-4 APIs accept service-to-service auth from the NestJS BFF, which carries the resolved customer/end-user scope.**
 3. **The uiflow meter-events endpoint becomes a facade** that translates generic `{value, timestamp, idempotency_key}` meter events into the engine's event shape and forwards to the Go ingest API. Idempotency happens once, in Redis (`SETNX`, 24h TTL) — never via table scans. Non-LLM metering is preserved; the pipeline is singular.
 4. **Exactly one invoice generator: the Go billing worker.** The uiflow invoice-generation cron (`quantumbilling_invoice_user_story.md:368, 502`) is struck. The uiflow invoice stories become read/present/pay flows over the billing tables the worker writes.
 5. **`customer.usage_summary` (defined in `quantumbilling_usage_limits_user_story.md:152`) is retained as a materialized rollup**, populated by a scheduled job aggregating from ClickHouse — for limits UI and portal displays only. Real-time *enforcement* stays on Redis counters per `phase_2`.
@@ -78,7 +78,7 @@ QuantumBilling bills a **monthly (subscription) component and a usage component 
 | Plan base fee (monthly/quarterly/yearly) | Subscription + plan price, prorated | Postgres control plane |
 | Usage charges | Per-meter aggregation for the period × rate card | ClickHouse × Postgres rates |
 | Overage | `max(0, usage − included units)` × overage rate | ClickHouse actuals, Postgres allowances |
-| Commit true-up | `max(0, commit_amount − period spend)` | Postgres contract, ClickHouse spend |
+| Commit true-up | Final term invoice only: `max(0, commit_amount − Σ term eligible spend)`, where eligible spend is `USAGE + OVERAGE` lines | Postgres contract, ClickHouse actuals, rated line-item spend |
 | Credits (FEFO by priority), tax | Ledger, tax config | Postgres |
 
 ### 3.1 Billing period rules
@@ -86,7 +86,7 @@ QuantumBilling bills a **monthly (subscription) component and a usage component 
 1. **The subscription anniversary defines the period window** — not the calendar month. Usage aggregation against ClickHouse uses exactly that per-subscription window.
 2. **Redis enforcement counters reset per-customer on their anniversary** (phase 2's "reset on billing boundaries"), driven off the subscriptions table — not globally on the 1st.
 3. **Period membership is decided by `timestamp_ms`** (when the call happened), not `ingested_at`. Late arrivals are handled by re-rating (§4.1), not by holding invoices open indefinitely.
-4. **Draft → finalize with a grace window**: invoice generated as `draft` at anniversary + 24–48h, then finalized to `pending`. Post-finalization events become prior-period adjustment lines on the next invoice or credit notes — issued invoices are never mutated.
+4. **Draft → finalize with a grace window**: the `draft` invoice opens at `period_end`; late in-period arrivals update it during `[period_end, period_end + INVOICE_GRACE_HOURS)`. At grace expiry the worker finalizes it to `pending`. Post-finalization events become prior-period adjustment lines on the next invoice or credit notes — issued invoices are never mutated.
 
 ### 3.2 Proration
 
@@ -222,7 +222,7 @@ flowchart LR
         ST <--> BW
     end
 
-    UI[React dashboards<br/>+ portals + chat] --> API
+    UI[Next.js dashboards<br/>+ D-19 portal/policy<br/>+ D-20 AI surfaces] --> API
     R -->|Pub/Sub → WS| UI
 ```
 
@@ -254,6 +254,8 @@ flowchart LR
 | `quantumbilling_credits_user_story.md`, `quantumbilling_payment_method_management_user_story.md` | Add wallet, burndown display, auto top-up config (CR-2); auto-collection (CR-6) |
 | `quantumbilling_pricing_user_story.md`, `quantumbilling_rate_cards_user_story.md` | Add CR-3 models; simulation (CR-9) |
 | `workflow_connectivity_analysis.md` | Rewrite around this topology; add the event engine it currently omits |
+| D-19 UI tail stories | Portal and policy surfaces (developer portal, API-key UI, entitlement grants, rate-limit policy UI, tax config UI, customer portal) sit in the Next.js/BFF control plane and do not change usage ingestion or billing authority |
+| D-20 AI surfaces | Chatbot and recommendations are UI/BFF surfaces over the reconciled analytics, billing, and customer data; they do not introduce a second usage pipeline |
 
 ---
 

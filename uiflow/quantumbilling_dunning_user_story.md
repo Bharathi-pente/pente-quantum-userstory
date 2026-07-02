@@ -497,7 +497,7 @@ pending  (finalized; auto-charge attempted — CR-6)
 
 ### Key API Design Notes
 
-- All list endpoints support pagination: `?page=1&limit=20` with response shape `{data: [], totalCount: number, page: number, limit: number, hasNextPage: boolean}`
+- All list endpoints support pagination: `?page=1&limit=20` with response shape `{data: [], total_count: number, page: number, limit: number, has_next_page: boolean}`
 - All IDs are UUID v4
 - Timestamps in ISO 8601 format (UTC)
 - Policy `retry_schedule` JSONB schema:

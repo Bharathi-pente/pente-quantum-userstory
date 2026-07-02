@@ -84,7 +84,7 @@ Key capabilities:
 
 **Given:** org `acme` has 5 active AI recommendations
 **When:** GET `/api/v1/ai/recommendations?page=1&limit=20`
-**Then:** 200 returned, 5 recommendation objects in `items`, `totalCount=5`, `hasNextPage=false`
+**Then:** 200 returned, 5 recommendation objects in `items`, `total_count=5`, `has_next_page=false`
 
 ---
 
@@ -183,7 +183,7 @@ List all active (non-expired, non-dismissed) AI recommendations for the authenti
 
 - **Auth:** JWT · Guard: `OrgAdminGuard`
 - **Query:** `?page=1&limit=20&recommendation_type=CHURN_RISK&priority=HIGH&status=PENDING`
-- **Response:** `200 {items: [...], totalCount, page, limit, hasNextPage}`
+- **Response:** `200 {items: [...], total_count, page, limit, has_next_page}`
 
 ---
 

@@ -12,7 +12,7 @@
 
 As a **platform security operator**, I need a secure audit trail that logs every blocked request (such as invalid keys, exhausted budgets, rate limit violations, or guardrail blocks) to a database table, and an endpoint to query these logs so I can identify misconfigured clients, abuse, or unauthorized access attempts.
 
-The audit table is `audit.security_audit_logs` (canonical home per ERD C-7 — security violations only, distinct from the actor-action log `platform.audit_logs`). Supported `violation_type` values: `invalid_key`, `budget_exhausted`, `rate_limit`, `guardrail_blocked`.
+Actor-operation audit entries live in `platform.audit_logs`. The security-violation audit table is `audit.security_audit_logs` (canonical home per ERD C-7). Supported `violation_type` values: `invalid_key`, `budget_exhausted`, `rate_limit`, `guardrail_blocked`.
 
 This story implements the security auditing interface:
 *   Synchronous SQL write logic inside the Auth/Ingress Middleware to write log records directly to Postgres when a request is blocked.

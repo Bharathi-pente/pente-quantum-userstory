@@ -21,7 +21,7 @@ The flow is: create contract (DRAFT) → activate (signed/deployed) → invoices
 **Key capabilities:**
 - ORG_ADMIN creates a contract linked to a customer, with an optional `rate_card`, name, `commit_amount` (minimum spend commitment), and `auto_renew` flag
 - Contract status: `DRAFT | ACTIVE | EXPIRED | TERMINATED`
-- `commit_amount`: at period close the Go billing worker computes `max(0, commit_amount − period spend)` and bills any shortfall as a `COMMIT_TRUE_UP` invoice line item (ADR-001 §3)
+- `commit_amount`: evaluated over the contract term `[start_date, end_date)`; eligible spend is USAGE + OVERAGE only, and any shortfall posts as one `COMMIT_TRUE_UP` line on the final invoice of the term (ADR-001 §3)
 - Contract can be linked to a `catalog.rate_card` (defines meter rates) or have contract-specific `billing.contract_rates`
 - **`billing.contract_rates` are step 1 of the ADR-001 §3.3 rating waterfall**: contract_rates → the contract's pinned `rate_card_version` entry → the plan charge's pricing model → unrated (flagged on a rating-exceptions report)
 - A contract governs many subscriptions: `customer.subscriptions.contract_id` points at the contract (ERD.md conflict C-13); contracts carry no `subscription_id` back-reference
@@ -48,7 +48,7 @@ The flow is: create contract (DRAFT) → activate (signed/deployed) → invoices
 1. ORG_ADMIN can create a contract with `customer_id`, `name`, `rate_card_id` (optional), `commit_amount` (decimal, >= 0), and `auto_renew` (boolean). Initial status is `DRAFT`.
 2. Contract transitions: `DRAFT → ACTIVE` (via explicit activate action), `ACTIVE → EXPIRED` (end date reached), `ACTIVE → TERMINATED` (early termination), `EXPIRED → ACTIVE` (renew).
 3. A contract's `rate_card_id` links to `catalog.rate_cards.id`. If null, contract-specific rates must be added via `POST /contracts/:id/rates`.
-4. `commit_amount` is stored as a decimal. At invoice time the Go billing worker compares actual period spend against `commit_amount` and emits a `COMMIT_TRUE_UP` line item for `max(0, commit_amount − period spend)` (ADR-001 §3).
+4. `commit_amount` is stored as a decimal. The Go billing worker tracks commit-progress annotations on interim invoices, then on the final invoice of the term compares eligible spend over `[start_date, end_date)` (USAGE + OVERAGE only) against `commit_amount` and emits a `COMMIT_TRUE_UP` line item for any shortfall (ADR-001 §3).
 5. `auto_renew` flag: when true, the billing engine auto-renews the associated subscription(s) at `end_date`.
 6. Contract-specific billing rates (`billing.contract_rates`) can be added per meter via `POST /contracts/:contractId/rates`. These are step 1 of the ADR-001 §3.3 rating waterfall — they override the contract's pinned rate-card version entry (step 2) and the plan charge's pricing model (step 3); anything unmatched is flagged unrated (step 4), never billed at an implicit zero.
 7. Discounts can be applied to a contract via `POST /contracts/:contractId/discounts`. Multiple discounts can exist; priority field determines application order.
@@ -260,7 +260,7 @@ On save: `POST /api/v1/contracts`. On success: redirect to contract detail page.
 - **State machine transitions** are enforced in the service layer — guard methods `canActivate()`, `canTerminate()`, `canRenew()` check current status before allowing transitions.
 - **Billing engine integration:** on `DRAFT → ACTIVE`, emit a `ContractActivated` event to the billing engine so it begins generating invoice candidates. On `ACTIVE → TERMINATED/EXPIRED`, emit `ContractDeactivated`.
 - **Auto-renewal** is handled by the billing engine's scheduled job — it reads `auto_renew = true` contracts whose `end_date` is approaching and calls the renew endpoint.
-- **Commit true-up** logic: the Go billing worker computes `max(0, commit_amount − period spend)` (Postgres contract × ClickHouse spend) and applies a line item of type `COMMIT_TRUE_UP` to the invoice (ADR-001 §3). Applied as a post-calculation step after normal usage line items.
+- **Commit true-up** logic: the Go billing worker computes `max(0, commit_amount − eligible spend over the contract term)` (Postgres contract × ClickHouse spend, USAGE + OVERAGE only) and applies a line item of type `COMMIT_TRUE_UP` only on the final invoice of the term (ADR-001 §3). Interim invoices carry a commit-progress annotation only.
 - **Discount priority:** when multiple discounts apply, sort by `priority` ASC (lower number = applied first). Discount types: `PERCENTAGE` (percentage off subtotal), `FIXED_CREDIT` (flat credit), `VOLUME` (tiered based on usage).
 - **Prisma models:** `Contract` (enum `ContractStatus { DRAFT ACTIVE EXPIRED TERMINATED }`), `ContractRate`, `Discount` (enum `DiscountType { PERCENTAGE FIXED_CREDIT VOLUME }`), linked via FKs as defined in ERD.md §§2–4.
 - **Subscriptions linking (ERD.md C-13):** the FK direction is subscription → contract — `customer.subscriptions.contract_id` (nullable) points at the contract; a contract governs many subscriptions and carries no `subscription_id` back-reference. A subscription may exist without a contract (one-off billing). When a contract is terminated, existing subscriptions remain but `contract_id` is not cleared (historical record).

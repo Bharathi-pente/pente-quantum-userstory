@@ -52,15 +52,15 @@ A pre-call hook intercepts every request. If the API key's `source_mode == "byok
 | 13 | **Toxicity blocking:** Scan the request `messages` content against a configurable keyword blocklist. If match found, reject with `400 CONTENT_BLOCKED` |
 | 14 | **Secrets detection:** Scan for patterns matching AWS keys (`AKIA*`), GitHub tokens (`ghp_*`, `gho_*`), OpenAI keys (`sk-*`), and generic API key patterns. If found, mask the secret in logs, add warning to response metadata |
 | 15 | **PII masking:** Detect email addresses, credit card numbers (Luhn check), and phone numbers in the request content. Mask them before forwarding (e.g., `j***@e***.com`, `****-****-****-1234`) |
-| 16 | All guardrail violations are logged to the `security_audit_logs` table in Postgres (Phase 3 Story 14) with: `action`, `resource_type="gateway_request"`, `details` (JSON with violation type and masked content) |
+| 16 | All guardrail violations write a `guardrail_blocked` security violation row to `audit.security_audit_logs` in Postgres (Phase 3 Story 14) with `violation_type`, `api_key_id`, `customer_id`, `ip_address`, `details` (JSON with rule and masked content), and `triggered_by` |
 
 ### Audit Trail
 
 | # | Criterion |
 |---|---|
-| 17 | Every BYOK request logs an audit entry: `actor`=end_user_id, `action`="byok_proxy_request", `resource_type`="ai_provider_call", `metadata`={provider, model, tokens_estimate} |
-| 18 | Guardrail blocks log: `action`="guardrail_blocked", `details`={rule, matched_pattern} |
-| 19 | Decryption failures log: `action`="byok_decryption_failed", `details`={error_type} (no key material) |
+| 17 | Every BYOK request logs an actor-action audit entry to `platform.audit_logs`: `user_id`=end_user_id, `action`="byok_proxy_request", `resource_type`="ai_provider_call", `resource_id`=<request_id>, `new_value`={provider, model, tokens_estimate}, `status`="SUCCESS" |
+| 18 | Guardrail blocks log a security violation to `audit.security_audit_logs` with `violation_type`="guardrail_blocked" and `details`={rule, matched_pattern} |
+| 19 | Decryption failures log a security violation to `audit.security_audit_logs` with `violation_type`="invalid_key" and `details`={error_type} (no key material) |
 
 ---
 
@@ -87,7 +87,8 @@ A pre-call hook intercepts every request. If the API key's `source_mode == "byok
 |---|---|---|
 | `LiteLLM Postgres` (`LiteLLM_VerificationToken`) | `SELECT` (via `user_api_key_dict`) | `metadata` → `customer_provider_key` (base64 blob: IV+ciphertext+tag, produced by Story 13 encryption) |
 | **Event Engine Postgres** (`byok_provider_keys`) | `SELECT` | `encrypted_key`, `key_iv` (AES-256-GCM) |
-| **Event Engine Postgres** (`security_audit_logs`) | `INSERT` | `actor_id`, `action`, `resource_type`, `details` (JSON) |
+| **Event Engine Postgres** (`platform.audit_logs`) | `INSERT` | `org_id`, `user_id`, `action`, `resource_type`, `resource_id`, `new_value`, `status`, `created_at` |
+| **Event Engine Postgres** (`audit.security_audit_logs`) | `INSERT` | `org_id`, `api_key_id`, `customer_id`, `violation_type`, `ip_address`, `details`, `triggered_by`, `created_at` — writes `guardrail_blocked` security violation rows |
 
 ---
 
@@ -124,4 +125,5 @@ A pre-call hook intercepts every request. If the API key's `source_mode == "byok
 - **Provider mapping is a simple Python dict.** Keep it in a constant at the top of the file. Add new providers as needed.
 - **Guardrails are best-effort, not security-critical.** They catch obvious mistakes (accidental key leaks, toxic prompts) but are not a replacement for proper input validation at the application layer.
 - **PII masking uses regex patterns.** Email: `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`. Credit card: Luhn algorithm validation on 13-19 digit sequences. Phone: E.164 pattern matching.
-- **`security_audit_logs` table** is created in Phase 3 Story 14. Ensure the BYOK middleware has write access to this table (same Postgres credentials as the control plane).
+- Actor-operation BYOK request entries write to `platform.audit_logs` per C-7.
+- **`audit.security_audit_logs` table** is created in Phase 3 Story 14. Ensure the BYOK middleware has write access for security violation rows (same Postgres credentials as the control plane).
