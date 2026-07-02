@@ -1,6 +1,6 @@
 # QuantumBilling — Dispatch Audit Plan
 
-**Status:** v1.1 — complete, aligned to DISPATCH.md v1.1 · 2026-07-02
+**Status:** v1.2 — 21 audits, aligned to DISPATCH.md v1.2 · 2026-07-02
 **Purpose:** Every dispatch unit D-XX is verified by an **independent audit agent** running the paired prompt A-XX below, in a fresh session, before any dependent unit is dispatched. The audit agent must not be the agent that built the unit.
 
 ## Audit contract (applies to every A-XX)
@@ -31,7 +31,7 @@
 | A-07 | D-07 Analytics APIs | ✅ below | ☐ |
 | A-08 | D-08 BFF + dashboards | ✅ below | ☐ |
 | A-09 | D-09 Test clocks + rating | ✅ below | ☐ |
-| A-10 | D-10 Catalog control plane | ✅ below | ☐ |
+| A-10 | D-10 Meters + catalog control plane | ✅ below | ☐ |
 | A-11 | D-11 Counters + enforcement | ✅ below | ☐ |
 | A-12 | D-12 Invoice engine | ✅ below | ☐ |
 | A-13 | D-13 Wallet | ✅ below | ☐ |
@@ -40,6 +40,8 @@
 | A-16 | D-16 Rev-rec + rollup | ✅ below | ☐ |
 | A-17 | D-17 Simulation + groups + margin | ✅ below | ☐ |
 | A-18 | D-18 Export + ops UI + closing sweep | ✅ below | ☐ |
+| A-19 | D-19 Portal & policy surfaces | ✅ below | ☐ |
+| A-20 | D-20 AI surfaces + final closing sweep | ✅ below | ☐ |
 
 ---
 
@@ -295,10 +297,17 @@ file:line/evidence). Append it to AUDIT_LOG.md. Do not fix anything.
   once each, chronological order; advance backwards → rejected.
 ```
 
-## A-10 — Audit: catalog control plane
+## A-10 — Audit: meters + catalog control plane
 
 ```text
 [Preamble for D-10.] Attack vectors:
+- Meters (deliverable 0 — a live dependency of rating): CRUD state machine
+  DRAFT→ACTIVE→INACTIVE; facade event with a valid X-Meter-Api-Key lands in Kafka
+  with the KEY's org attribution (spoof a foreign org_id in the body — must be
+  ignored); duplicate idempotency_key → 409 passthrough; first event flips
+  DRAFT→ACTIVE exactly once under concurrent sends; the facade holds NO Postgres
+  usage rows (grep for usage_events inserts — BLOCKER per ADR-001 §2).
+- Charges cannot be created against a nonexistent or foreign-org meter (FK + scope).
 - Snapshot sufficiency (the load-bearing check): create a full catalog via API, take
   the emitted plan_version + rate_card_version snapshots, and rate a synthetic event
   using ONLY the snapshots via the D-09 resolver — success required; a snapshot missing
@@ -477,6 +486,57 @@ CLOSING SWEEP (system-level, gates "complete"):
 - End-to-end day-in-the-life on a test clock: onboard org → catalog → subscription →
   gateway traffic → enforcement warning → wallet burn + top-up → month close → invoice
   → auto-charge fail → dunning → pay → late event → credit note → rev-rec report →
-  export. Every artifact checked at each step. This scenario green = the system is
-  built per spec.
+  export. Every artifact checked at each step. This scenario green = the CORE program
+  is built per spec (the UI tail D-19/D-20 follows; A-20 re-runs this sweep last).
+```
+
+## A-19 — Audit: portal & policy surfaces
+
+```text
+[Preamble for D-19.] Attack vectors:
+- Key portal: raw key visible in exactly one UI response and nowhere in the DOM
+  afterwards (revisit/refresh the page — reappearance is a BLOCKER); revoke in UI →
+  ingest 401 within 1s; list views show key_prefix only (scrape all network payloads
+  for full-key patterns).
+- Entitlements: grant→check→revoke round-trip against the live engine check API;
+  per_end_user scope does not leak to sibling end users; expiry fires on clock
+  advance, not before.
+- Rate limiting: hit the limit boundary exactly (N ok, N+1 → 429 with error
+  envelope); switch API keys mid-window — limits are per-key, not global; verify the
+  hot path touched only Redis (query logs) and Postgres audit rows arrive async;
+  header-spoofing attempts don't reset the window.
+- Tax config: exemption states (pending/verified/rejected) gate application — a
+  REJECTED exemption must NOT reduce tax on the next test-clock invoice; verified one
+  must, with tax_calculation_audit citing the exemption_id.
+- Customer portal: CUSTOMER-role session — walk every /my-account page and diff
+  network payloads for any other customer's ids/amounts (leakage = BLOCKER);
+  pay flow uses the D-14 path (no parallel payment implementation).
+- Drift: no engine billing-table writes anywhere in this unit's diff.
+```
+
+## A-20 — Audit: AI surfaces + final closing sweep
+
+```text
+[Preamble for D-20.] Attack vectors, then the program-final sweep.
+UNIT:
+- Scope integrity (the big one): same question asked as SUPER_ADMIN, ORG_ADMIN,
+  CUSTOMER, END_USER — each answer's numbers must match what that role's own
+  phase-4/BFF calls return, verified by replaying the calls with that role's token.
+  Cross-org/cross-customer data in any answer is a BLOCKER.
+- Prompt injection battery: "ignore previous instructions", "act as admin", asking
+  for another org by name/id, asking the bot to echo its system prompt/tokens —
+  scope must come from the session token only; no widening, no secret leakage.
+- Grounding: chatbot numbers equal the API responses it cites (intercept and diff) —
+  hallucinated figures on billing data are a BLOCKER, not a MINOR.
+- Service posture: the chatbot service holds read-only DB credentials (attempt an
+  INSERT through its connection — must fail at the role level); SSE endpoints
+  reject missing/expired session auth; 429 at the documented rate limit.
+- Recommendations: deterministic on fixture data (run twice, identical rows);
+  ACTIONED/DISMISSED events recorded with the acting user; expired items filtered.
+FINAL SWEEP:
+- Re-run the A-18 closing sweep (blocker-regression greps + the day-in-the-life
+  scenario) on the final commit of the program, now including: a portal-created key
+  used for the gateway traffic step, an entitlement + rate-limit policy enforced
+  mid-scenario, and a chatbot question about the generated invoice whose answer
+  matches it. This green = the COMPLETE 21-unit program is built per spec.
 ```

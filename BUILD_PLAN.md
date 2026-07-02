@@ -1,6 +1,6 @@
 # QuantumBilling — Build Plan
 
-**Status:** Proposed · 2026-07-01
+**Status:** v1.1 — dependency edges and the §6 coverage ledger reconciled with DISPATCH.md v1.1 (21 units) · 2026-07-02
 **Companions:** [ADR-001](ARCHITECTURE_DECISION.md) (architecture) · [ERD.md](ERD.md) (schema)
 **Purpose:** Dependency-correct build sequence. The backend docs' linear Phase 0→1→2→3→4→5 order predates ADR-001 and is wrong in three places: it lacks a control-plane phase (now a hard prerequisite of Phase 0 per ADR-001 §2.1), it places Phase 2 too early (it has the widest dependency fan-in and nothing depends on it), and it places Phase 3 too late (it gates real ingest auth and all of Phase 5). This plan replaces the linear order with a spine plus three parallel tracks.
 
@@ -75,7 +75,7 @@ Kafka → ClickHouse `events.usage_events` (+ dedup view). From this moment ever
 |---|---|---|
 | B-1 | Phase 4: analytics APIs (stories 15–19) with BFF service auth | Paths use `/v1/customers/...` per rename |
 | B-2 | NestJS BFF proxy + dashboards: org overview, team usage, platform analytics, end-user dashboard/events | All read via phase-4, none via Postgres |
-| B-3 | story_30 usage-summary rollup job | Feeds limits UI + portal displays |
+| B-3 | story_30 usage-summary rollup job | Feeds limits UI + portal displays (dispatched with D-16 in DISPATCH.md) |
 
 **Exit / Milestone M2:** all five dashboards render live ClickHouse data through the BFF.
 
@@ -85,7 +85,7 @@ Kafka → ClickHouse `events.usage_events` (+ dedup view). From this moment ever
 |---|---|---|
 | C-1 | story_33 test clocks | Before the worker: period logic is untestable without it |
 | C-2 | story_27 rate resolution engine | Pure waterfall resolver + rating-exceptions report |
-| C-3 | CP extension: pricing, rate cards, contracts, subscriptions, plans stories (NestJS) | Track C's config inputs; can start alongside C-1/C-2 |
+| C-3 | CP extension: meters (CRUD + events facade), pricing, rate cards, contracts, subscriptions, plans stories (NestJS) | Track C's config inputs — meters gate charges and the rating resolver; can start alongside C-1/C-2 |
 | C-4 | Phase 2 core: consumer + counters (36), enforcement API (37), credits/FEFO (38), invoice engine (39) | Anniversary windows, typed line items, snapshots, draft/grace/finalize |
 | C-5 | story_25 wallet & auto top-up | Needs 36 (hot path) + Stripe, not the invoice engine — can ship mid-track |
 | C-6 | story_28 auto-collection + dunning + reconciliation | First collected revenue |
@@ -93,27 +93,30 @@ Kafka → ClickHouse `events.usage_events` (+ dedup view). From this moment ever
 
 **Milestone M3** (after C-4 stories 36–37 + C-5): real-time enforcement + prepaid wallet live — revenue via prepaid before invoicing exists.
 **Milestone M4** (after C-4 complete): first reproducible invoice, generated retroactively over ClickHouse history on a test clock.
-**Milestone M5** (after C-6/C-7): auto-collected, correctable billing.
+**Milestone M5** (C-6 lands it; C-7 completes it): auto-collected billing at C-6/D-14, with the correction loop (re-rating + credit notes, C-7/D-15) closing out the milestone.
 
-## 5. Post-core (any order after M4/M5)
+## 5. Post-core (after M4/M5 — partially ordered, not free-form)
 
-story_29 rev-rec ledger · story_31 pricing simulation · story_32 billing groups · story_34 margin analytics · story_35 warehouse export — plus uiflow stories that present them (reports, credits UI extensions, webhooks new event types, AI chatbot, AI recommendations, alerts).
+story_29 rev-rec ledger · story_31 pricing simulation · story_32 billing groups · story_34 margin analytics · story_35 warehouse export — plus the presenting uiflow surfaces (reports, webhooks, alerts, portal/policy UI, AI surfaces). **Ordering edges exist** (per DISPATCH v1.1): rev-rec needs the wallet (D-16 ← D-12, D-13); the export/webhook/ops unit needs the full event catalog (D-18 ← D-13/14/15/16, D-17 for margin reports only); the portal/policy tail needs keys, web app, and billing surfaces (D-19 ← D-05/08/12/13/14); AI surfaces need analytics + web (D-20 ← D-07/08/12). Simulation/groups/margin (D-17) is the only truly free agent after D-12.
 
 ## 6. Story-to-phase map
 
-| Phase/Track | Backend stories | Uiflow stories |
-|---|---|---|
-| CP | — (story_3 consumer side) | organization, onboarding, customer, customer_management, end_user_management |
-| 0 | 1, 2, 3, 4, 5, 6 | meter (facade endpoint) |
-| 1 | 7, 8, 9, 10 | — |
-| A | 11, 12, 13, 14, 20, 21, 22, 23, 24 | developer_portal, api_key_management |
-| B | 15, 16, 17, 18, 19, 30 | org overview, team usage, platform analytics, end-user dashboard/events, usage_limits (display) |
-| C | 33, 27, 36–40 (phase_2-local), 25, 28, 26 | pricing, rate_cards, contract, subscription, invoice, payment, payment_method_management, dunning, tax_and_currency, credits, customer_portal |
-| Post | 29, 31, 32, 34, 35 | reports, webhook, alerts, ai_recommendations, ai_chatbot, audit_and_compliance, entitlement stories, rate_limiting |
+This ledger is reconciled 1:1 with DISPATCH.md's 21 units — every story listed is read by a named unit; nothing here is unscheduled.
+
+| Phase/Track | Dispatch units | Backend stories | Uiflow stories |
+|---|---|---|---|
+| CP | D-01 | — (story_3 consumer side) | organization, onboarding, customer, customer_management, end_user_management |
+| 0 | D-02, D-03 | 1, 2, 3, 4, 5, 6 | — |
+| 1 | D-04 | 7, 8, 9, 10 | — |
+| A | D-05, D-06 | 11, 12, 13, 14, 20, 21, 22, 23, 24 | — (portal UI for keys lands in D-19) |
+| B | D-07, D-08 | 15, 16, 17, 18, 19 | org overview, team usage, platform analytics, end-user dashboard, end-user events |
+| C | D-09–D-15 | 33, 27, 36–40 (phase_2-local incl. story 40 health/obs in D-11/D-12), 25, 28, 26 | meter (CRUD + facade — D-10), product, pricing, rate_cards, contract, subscription, invoice, payment, payment_method_management, dunning, credits (all D-10/D-12–D-14); tax_and_currency engine half in D-12 (config UI in D-19) |
+| Post | D-16–D-18 | 29, 30, 31, 32, 34, 35 | reports, webhook, alerts, audit_and_compliance |
+| UI tail | D-19, D-20 | — | developer_portal, api_key_management, entitlement, entitlement_grants, rate_limiting, tax_and_currency (config UI), customer_portal, ai_recommendations, ai_chatbot |
 
 ## 7. Open sequencing risks
 
-1. **Phase CP has no phase doc** — this plan is its only spec; author one before kickoff if a doc-per-phase convention matters.
+1. ~~Phase CP has no phase doc~~ **Resolved:** DISPATCH.md unit D-01 plus the shipped Keycloak realm (`infra/keycloak/quantumbilling-realm.json`) now serve as the Phase CP spec; a separate phase doc is optional.
 2. **Stripe account/config** gates C-5/C-6 and nothing else — provision early, it's pure lead time.
 3. **KMS decision** (ADR-001 §7) gates Track A production cutover, not development.
 4. **Flink vs Go aggregator** (ADR-001 §7) affects only the optional real-time agg topics — deferrable past M4.
