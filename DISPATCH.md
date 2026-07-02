@@ -124,7 +124,9 @@ DONE CRITERIA (all must be demonstrably true; record evidence in HANDOFF.md):
   (`--profile gateway`) and prometheus/otel (`--profile observability`) are NOT
   required healthy here — the gateway profile boots at D-06.
 - `npx prisma migrate dev` (in control-plane/) generates and applies the initial
-  migration from schema.prisma with zero drift or errors — all 12 schemas created.
+  migration from schema.prisma with zero drift or errors — all 13 schemas created
+  (identity, customer, catalog, billing, developer, security, audit, communication,
+  reporting, analytics, compliance, platform, workflow).
 - `engine/scripts/clickhouse-migrate.sh` creates events.usage_events + the dedup view;
   re-running it is a no-op.
 - `psql -f scripts/seed-dev.sql` succeeds and is idempotent (run twice).
@@ -330,8 +332,9 @@ DELIVERABLES (engine/cmd/keys-api)
    op via crypto/rand, ciphertext+IV in security.byok_provider_keys BYTEA, master key
    from BYOK_MASTER_KEY via SHA-256 (dev only — code comment referencing ADR-001 §7).
 4. Security audit per story_14: invalid key, budget_exhausted, rate_limit,
-   guardrail_blocked → audit.security_audit_logs (org default "unknown", IP from
-   X-Forwarded-For, key prefix 8 chars, details ≤1000 chars).
+   guardrail_blocked → audit.security_audit_logs (org_id NULL when the org cannot be
+   resolved — never a literal "unknown", the column is a UUID FK (ERD C-25); IP from
+   X-Forwarded-For, key prefix 8 chars in details, details ≤1000 chars).
 5. Tests: all four stories' TC lists.
 
 DONE CRITERIA:

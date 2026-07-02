@@ -26,7 +26,7 @@ This story implements the security auditing interface:
 
 | # | Criterion | Details / Edge Cases |
 |---|---|---|
-| 1 | When a request is blocked due to `invalid_key`, write an audit log to PostgreSQL `audit.security_audit_logs`. | Set `org_id="unknown"`, capture client IP, set `violation_type="invalid_key"`, and store the key's prefix (first 8 characters). |
+| 1 | When a request is blocked due to `invalid_key`, write an audit log to PostgreSQL `audit.security_audit_logs`. | Set `org_id = NULL` when the org cannot be resolved (the column is a nullable UUID FK — never a literal `"unknown"`; ERD C-25), capture client IP, set `violation_type="invalid_key"`, and store the key's prefix (first 8 characters) plus the reason in `details`. |
 | 2 | When a request is blocked due to `budget_exhausted` (e.g. per-key limit exceeded), write an audit log to PostgreSQL. | Set the correct `org_id`, client IP, and `violation_type="budget_exhausted"`, storing details about the limit and accumulated cost. |
 | 3 | When a request is blocked due to rate limiting (`rate_limit`), write an audit log to PostgreSQL. | Set `org_id`, client IP, and `violation_type="rate_limit"`. |
 | 3a | When a request is blocked by a guardrail (`guardrail_blocked`), write an audit log to PostgreSQL. | Set `org_id`, client IP, and `violation_type="guardrail_blocked"`, storing the triggering guardrail in `details`. |

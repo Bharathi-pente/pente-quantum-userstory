@@ -1,12 +1,12 @@
 # QuantumBilling — Reconstructed ERD
 
-**Status:** Reconstructed 2026-07-01 · Companion to [ADR-001](ARCHITECTURE_DECISION.md)
+**Status:** v1.2 — reconstructed 2026-07-01, reconciled with prisma/schema.prisma and DISPATCH v1.2 on 2026-07-02 · Companion to [ADR-001](ARCHITECTURE_DECISION.md)
 **Provenance:** Seven uiflow stories cite an external "ERD" that was never committed to this repo (e.g. `meter:309`, `organization:180`, `pricing:364`). This document reconstructs it from every "Data Tables" section, Prisma snippet, and schema-alignment note across all ~70 story docs — then **normalizes it to the ADR-001 target architecture**.
 
 **How to read this document:**
 - Diagrams show the **canonical (resolved) model**. Where source docs conflict, the diagram shows the resolution and the [Conflict Register](#conflict-register) (§9) records every variant with citations.
 - Tables added by ADR-001 core requirements are suffixed `⟨CR-n⟩` in comments.
-- Types: only `story_6`, `story_13` (backend) and `rate_limiting` (uiflow) declare SQL types; everything else is inferred (`uuid`, `text`, `numeric`, `timestamptz`, `jsonb`). Treat types as advisory.
+- Types: only `story_6`, `story_13` (backend) and `rate_limiting` (uiflow) declare SQL types; everything else was inferred. **Authority split:** this ERD is the *conceptual canon* (entities, relationships, enums, conflict resolutions); [`prisma/schema.prisma`](prisma/schema.prisma) is the *executable DDL authority* (exact types, nullability, indexes, constraints). Where they differ, the difference must be resolved through the Conflict Register (§9) — never left standing.
 - Mermaid cannot render dots in entity names: `identity_organizations` = `identity.organizations`.
 
 **Store map (per ADR-001):**
@@ -15,6 +15,7 @@
 |---|---|---|
 | Postgres — `identity`, `customer`, `catalog`, `developer`, `security`, `communication`, `reporting`, `analytics`, `compliance`, `platform`, `workflow` | Control plane | NestJS/Prisma |
 | Postgres — `billing` | Financial artifacts | Go billing worker |
+| Postgres — `audit` | Security-violation log (`security_audit_logs`) | Go engine services (ingest, keys-api, gateway hooks) |
 | ClickHouse — `events` | Usage source of truth | Go analytics worker |
 | Redis | Enforcement cache, wallet cache, idempotency, pub/sub | Go services |
 | LiteLLM Postgres (separate DB) | Gateway operational store | LiteLLM/Prisma |
@@ -665,6 +666,54 @@ erDiagram
     }
 ```
 
+Supplementary billing entities (full executable detail in `prisma/schema.prisma`):
+
+```mermaid
+erDiagram
+    billing_billing_groups ||--o{ billing_billing_group_members : "has members"
+    customer_customers ||--o{ billing_billing_group_members : "belongs via"
+    identity_organizations ||--o{ billing_rating_exceptions : "flagged for"
+    catalog_meters |o--o{ billing_rating_exceptions : "unrated on"
+    identity_organizations ||--o{ billing_simulation_runs : "simulates"
+
+    billing_billing_group_members {
+        uuid id PK "CR-8 (new); unique(group_id, customer_id)"
+        uuid group_id FK
+        uuid customer_id FK
+        timestamptz created_at "membership changes take effect next period (story_32)"
+    }
+    billing_rating_exceptions {
+        uuid id PK "ADR-001 §3.3 (new): unrated usage — never billed at implicit zero"
+        uuid org_id FK
+        uuid customer_id FK
+        uuid meter_id FK "nullable"
+        text model "nullable — failed rating dimension"
+        text token_type "nullable"
+        timestamptz period_start
+        timestamptz period_end
+        numeric quantity
+        text reason
+        text status "open|resolved|written_off"
+        timestamptz created_at
+        timestamptz resolved_at "nullable"
+    }
+    billing_simulation_runs {
+        uuid id PK "CR-9 (new): writes NO financial tables"
+        uuid org_id FK
+        text name
+        text scope "org|segment|all_customers"
+        uuid candidate_rate_card_id "nullable"
+        uuid candidate_plan_id "nullable"
+        timestamptz period_start
+        timestamptz period_end
+        text status "pending|running|completed|failed"
+        numeric revenue_delta "nullable"
+        jsonb result_summary "per-customer deltas"
+        timestamptz created_at
+        timestamptz completed_at "nullable"
+    }
+```
+
 > **Removed per ADR-001 §2: `billing.usage_events`.** It appeared in 9+ docs with 9 different column sets (Conflict C-1). Raw usage lives only in ClickHouse (§7); dashboards read the Go phase-4 APIs; `customer.usage_summary` (§2) is a ClickHouse-fed display rollup.
 
 ## 5. Developer & security (API keys, BYOK, rate limits, webhooks)
@@ -686,7 +735,7 @@ erDiagram
     developer_api_keys {
         uuid id PK "canonical schema: developer (conflict C-3)"
         uuid org_id FK
-        uuid customer_id FK "renamed from backend tenant_id — ADR-001 §2.1"
+        uuid customer_id FK "NULLABLE — org-scoped/direct-ingest keys carry no customer (C-26); renamed from backend tenant_id — ADR-001 §2.1"
         uuid end_user_id FK "nullable"
         text name
         text key_hash "SHA-256; = LiteLLM VerificationToken.token"
@@ -833,8 +882,8 @@ erDiagram
         timestamptz created_at
     }
     audit_security_audit_logs {
-        uuid id PK "security violations only"
-        uuid org_id FK
+        uuid id PK "security violations only; lives in the audit schema (C-7), written by Go engine services"
+        uuid org_id FK "NULLABLE — invalid-key attempts may have no resolvable org (C-25): org_id NULL, key_prefix + reason in details"
         uuid api_key_id FK
         uuid customer_id FK
         text violation_type "invalid_key|budget_exhausted|rate_limit|guardrail_blocked"
@@ -1051,7 +1100,48 @@ erDiagram
     }
 ```
 
-Additional analytics tables kept: `analytics.ai_org_settings` (`id, org_id, enabled_types, refresh_interval_minutes, updated_at`), `intelligence.customer_health_scores` → **merge into `analytics.churn_risk_scores`** or keep as `analytics.customer_health_scores` (`customer_id, health_score, score_date`). New per CR-12: `platform.test_clocks` (`id, org_id, frozen_at, status`) — billing-sandbox time control.
+Supplementary ops/analytics entities (full executable detail in `prisma/schema.prisma`):
+
+```mermaid
+erDiagram
+    identity_organizations ||--o{ platform_test_clocks : "sandboxed by"
+    identity_organizations ||--o{ reporting_export_configs : "exports via"
+    identity_organizations ||--|| analytics_ai_org_settings : "configures AI"
+    customer_customers ||--o{ analytics_customer_health_scores : "scored"
+
+    platform_test_clocks {
+        uuid id PK "CR-12 (new): sandbox time control — BillingClock resolves here; live orgs cannot bind"
+        uuid org_id FK
+        timestamptz frozen_at
+        text status "active|advancing|released"
+    }
+    reporting_export_configs {
+        uuid id PK "CR-13 (new)"
+        uuid org_id FK
+        text name
+        text destination "snowflake|bigquery|s3_parquet"
+        jsonb config "connection ref — secrets in KMS, never here"
+        jsonb datasets "usage_aggregates|invoices|revenue_recognition"
+        text schedule
+        text status "active|paused|error"
+        timestamptz last_synced_at "watermark"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    analytics_ai_org_settings {
+        uuid id PK
+        uuid org_id FK
+        jsonb enabled_types
+        int refresh_interval_minutes
+        timestamptz updated_at
+    }
+    analytics_customer_health_scores {
+        uuid id PK "resolves the intelligence.customer_health_scores stray (alerts story) into analytics"
+        uuid customer_id FK
+        int health_score
+        date score_date
+    }
+```
 
 ## 7. ClickHouse — usage source of truth
 
@@ -1180,6 +1270,8 @@ Every place the source docs contradict each other, with the resolution used abov
 | C-22 | `mrr` location | On organizations (platform_analytics) vs subscriptions (subscription) | Neither — derived metric, computed in `analytics.revenue_insights` |
 | C-23 | Entity vocabulary | Backend *Org → Tenant → User* + own `organizations`/`tenants`/`users` tables (story_6) vs uiflow *Org → Customer → End User* in `identity`/`customer` schemas | **Resolved (ADR-001 §2.1):** uiflow vocabulary canonical; `tenant_id`→`customer_id`, `user_id`→`end_user_id` everywhere incl. ClickHouse/Kafka/KeyContext; backend duplicate identity tables dropped |
 | C-24 | Pricing path fork | `pricing_models` vs `rate_cards` as "alternative structures, primary TBD" (pricing:364 — unresolved in the original ERD itself) | **Resolved (ADR-001 §3.3):** packaged path (plans→charges→pricing_models) + negotiated path (contracts→rate_cards→contract_rates); rating waterfall contract_rate → rate_card_version → pricing_model → unrated-flagged |
+| C-25 | Unknown-org security audit rows | story_14 said `org_id` defaults to literal `"unknown"` for invalid keys; the column is a UUID FK — un-insertable | **`org_id` is NULLABLE** (`NULL` = unresolvable org); `key_prefix` + reason go in `details`. Prisma + stories + dispatch updated |
+| C-26 | `developer.api_keys.customer_id` nullability | Required in the first-cut Prisma vs optional in story_11 / OpenAPI (`ApiKeyCreateRequest` requires only `org_id` + `name`) and story_2's bare-org Redis fallback | **Nullable** — org-scoped/direct-ingest keys carry no customer |
 
 ## 10. Redis key appendix (not ERD entities)
 

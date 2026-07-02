@@ -91,7 +91,8 @@ VERIFY, IN ORDER:
   Then `docker compose --profile gateway --profile observability config` parses
   (services defined, even though not started until D-06).
 - Fresh `npx prisma migrate dev` on an empty database: applies cleanly; then
-  `prisma migrate diff` against schema shows zero drift; \dn in psql lists all 12 schemas.
+  `prisma migrate diff` against schema shows zero drift; \dn in psql lists all 13
+  schemas (incl. `audit` — its absence means a stale schema.prisma copy, a BLOCKER).
 - clickhouse-migrate.sh: creates table + view; second run is a no-op (assert unchanged
   events.schema_migrations row count); SHOW CREATE TABLE events.usage_events matches
   docs/migrations DDL (engine ReplacingMergeTree(ingested_at), ORDER BY
@@ -215,7 +216,9 @@ file:line/evidence). Append it to AUDIT_LOG.md. Do not fix anything.
 - Budget fields: create key with budget_limit_usd/rpm — verify persisted and returned
   masked (no raw key in GET list, key_prefix only).
 - security_audit_logs: 4 violation types each produce a row with correct violation_type,
-  IP from X-Forwarded-For, ≤1000-char details, org "unknown" for invalid keys.
+  IP from X-Forwarded-For, ≤1000-char details, org_id NULL for unresolvable-org
+  invalid keys (ERD C-25 — a literal "unknown" string or a synthetic org row is a
+  BLOCKER), key_prefix + reason present in details for those rows.
 ```
 
 ## A-06 — Audit: LiteLLM gateway

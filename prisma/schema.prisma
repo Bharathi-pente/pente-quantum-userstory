@@ -1,10 +1,14 @@
 // -----------------------------------------------------------------------------
 // QuantumBilling — Prisma schema (control plane + billing artifacts)
 //
-// GENERATED FROM ERD.md (Reconstructed ERD, 2026-07-01) — the ERD is the
-// authority for tables, columns, enums, and relations (incl. its Conflict
-// Register resolutions C-1..C-24). New tables required by ADR-001 core
-// requirements (CR-1..CR-14) are marked in comments.
+// GENERATED FROM ERD.md (v1.2-reconciled, 2026-07-02). Authority split:
+//   - ERD.md is the CONCEPTUAL canon: entities, relationships, enums, and the
+//     Conflict Register resolutions (C-1..C-26).
+//   - THIS FILE is the EXECUTABLE DDL authority: exact types, nullability,
+//     indexes, constraints. Where the two differ, resolve through the ERD
+//     Conflict Register — never leave a divergence as a comment.
+// New tables required by ADR-001 core requirements (CR-1..CR-14) are marked
+// in comments.
 //
 // OWNERSHIP: Prisma is the SINGLE DDL owner for ALL Postgres schemas listed in
 // the datasource below — including the `billing` schema. Go services (billing
@@ -21,14 +25,13 @@
 // -----------------------------------------------------------------------------
 
 generator client {
-  provider        = "prisma-client-js"
-  previewFeatures = ["multiSchema"]
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-  schemas  = ["identity", "customer", "catalog", "billing", "developer", "security", "communication", "reporting", "analytics", "compliance", "platform", "workflow"]
+  schemas  = ["identity", "customer", "catalog", "billing", "developer", "security", "audit", "communication", "reporting", "analytics", "compliance", "platform", "workflow"]
 }
 
 // =============================================================================
@@ -2110,7 +2113,9 @@ model SimulationRun {
 model ApiKey {
   id             String       @id @default(uuid()) @db.Uuid
   orgId          String       @map("org_id") @db.Uuid
-  customerId     String       @map("customer_id") @db.Uuid
+  // NULLABLE: org-scoped/direct-ingest keys carry no customer (story_11 +
+  // OpenAPI ApiKeyCreateRequest require only org_id + name).
+  customerId     String?      @map("customer_id") @db.Uuid
   endUserId      String?      @map("end_user_id") @db.Uuid
   name           String
   // SHA-256; = LiteLLM VerificationToken.token (logical link, separate DB).
@@ -2129,7 +2134,7 @@ model ApiKey {
   createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
 
   organization Organization @relation(fields: [orgId], references: [id])
-  customer     Customer     @relation(fields: [customerId], references: [id])
+  customer     Customer?    @relation(fields: [customerId], references: [id])
   endUser      EndUser?     @relation(fields: [endUserId], references: [id])
 
   virtualKeyMappings VirtualKeyMapping[]
@@ -2333,11 +2338,14 @@ model AuditLog {
   @@schema("platform")
 }
 
-// Conflict C-7: security violations only. ERD names this audit.security_audit_logs;
-// hosted in the `security` schema here (the datasource's schema list is canonical).
+// Conflict C-7: security violations only (actor actions → platform.audit_logs).
+// Hosted in the `audit` schema per the ERD/story canon.
+// org_id is NULLABLE: invalid-key attempts often have no resolvable org — such
+// rows carry org_id = NULL with key_prefix + reason in `details` (never a
+// literal "unknown"; the column is a UUID FK).
 model SecurityAuditLog {
   id            String        @id @default(uuid()) @db.Uuid
-  orgId         String        @map("org_id") @db.Uuid
+  orgId         String?       @map("org_id") @db.Uuid
   apiKeyId      String?       @map("api_key_id") @db.Uuid
   customerId    String?       @map("customer_id") @db.Uuid
   violationType ViolationType @map("violation_type")
@@ -2347,15 +2355,15 @@ model SecurityAuditLog {
   triggeredBy   String?       @map("triggered_by")
   createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  organization Organization @relation(fields: [orgId], references: [id])
-  apiKey       ApiKey?      @relation(fields: [apiKeyId], references: [id])
-  customer     Customer?    @relation(fields: [customerId], references: [id])
+  organization Organization? @relation(fields: [orgId], references: [id])
+  apiKey       ApiKey?       @relation(fields: [apiKeyId], references: [id])
+  customer     Customer?     @relation(fields: [customerId], references: [id])
 
   @@index([orgId])
   @@index([apiKeyId])
   @@index([customerId])
   @@map("security_audit_logs")
-  @@schema("security")
+  @@schema("audit")
 }
 
 // CR-12 (new): billing-sandbox time control — time is an input, never sampled

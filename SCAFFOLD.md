@@ -30,7 +30,7 @@ This documentation repo seeds the monorepo: `openapi/`, `prisma/`, `migrations/`
 
 ## 2. Migration ownership: Prisma owns Postgres DDL, exclusively
 
-**Decision:** `prisma migrate` is the **only** DDL authority for the entire Postgres instance — all twelve schemas, including `billing.*`. The Go billing worker does DML only; it never creates or alters tables. ClickHouse DDL is owned by the Go analytics worker (plain SQL files in `engine/migrations/clickhouse/`, applied by a tiny runner with a `schema_migrations` table, per story_6).
+**Decision:** `prisma migrate` is the **only** DDL authority for the entire Postgres instance — all thirteen schemas, including `billing.*` and `audit.*`. The Go billing worker does DML only; it never creates or alters tables. ClickHouse DDL is owned by the Go analytics worker (plain SQL files in `engine/migrations/clickhouse/`, applied by a tiny runner with a `schema_migrations` table, per story_6).
 
 Rationale: two migration systems writing one database is an ordering fight nobody wins. Prisma already has to model every table the NestJS layer reads (which, post-ADR, includes everything the Go worker writes — invoices, notes, ledgers), so the schema file exists regardless; making it authoritative costs nothing. Consequences:
 - Go table changes are proposed as Prisma schema PRs (Go owners review the `billing.*` models — CODEOWNERS enforces).
