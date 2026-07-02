@@ -199,7 +199,11 @@ READ FIRST: docs/backend/phase_0_event_ingestion_pipeline.md,
 docs/backend/story_1_domain_types_and_validation.md,
 docs/backend/story_2_redis_auth_provider.md,
 docs/backend/story_4_single_event_ingest.md,
-openapi/event-engine.yaml (POST /v1/events), docs/SCAFFOLD.md §6.
+docs/backend/story_6_migrations_health_observability.md — health/ready/observability
+sections ONLY. CAUTION: story_6's Postgres DDL is SUPERSEDED (Prisma owns all Postgres
+DDL per SCAFFOLD §2; ClickHouse DDL is already materialized in
+engine/migrations/clickhouse) — do NOT create engine-owned Postgres migrations from it.
+Also: openapi/event-engine.yaml (POST /v1/events), docs/SCAFFOLD.md §6.
 
 DELIVERABLES (all in engine/)
 1. internal/models: UsageEvent + KeyContext exactly per story_1 (renamed fields

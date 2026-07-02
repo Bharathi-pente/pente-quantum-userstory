@@ -1,6 +1,6 @@
 # QuantumBilling — Build Plan
 
-**Status:** v1.1 — dependency edges and the §6 coverage ledger reconciled with DISPATCH.md v1.1 (21 units) · 2026-07-02
+**Status:** v1.2 — dependency edges and the §6 coverage ledger reconciled with DISPATCH.md v1.2 (21 units) · 2026-07-02
 **Companions:** [ADR-001](ARCHITECTURE_DECISION.md) (architecture) · [ERD.md](ERD.md) (schema)
 **Purpose:** Dependency-correct build sequence. The backend docs' linear Phase 0→1→2→3→4→5 order predates ADR-001 and is wrong in three places: it lacks a control-plane phase (now a hard prerequisite of Phase 0 per ADR-001 §2.1), it places Phase 2 too early (it has the widest dependency fan-in and nothing depends on it), and it places Phase 3 too late (it gates real ingest auth and all of Phase 5). This plan replaces the linear order with a spine plus three parallel tracks.
 
@@ -16,21 +16,27 @@
 
 ```mermaid
 flowchart TB
-    CP["Phase CP (new)<br/>Control-plane foundation"] --> P0["Phase 0<br/>Event ingestion"]
-    P0 --> P1["Phase 1<br/>Analytics worker → ClickHouse"]
-    P1 --> A1["Track A: Phase 3<br/>Keys & BYOK"]
-    A1 --> A2["Track A: Phase 5<br/>LiteLLM gateway"]
-    P1 --> B1["Track B: Phase 4<br/>Analytics APIs + BFF"]
-    B1 --> B2["Track B: Dashboards<br/>+ story_30 rollup"]
-    P1 --> C1["Track C prereqs:<br/>story_33 test clocks · story_27 rating<br/>· CP pricing/subscription stories"]
-    C1 --> C2["Track C: Phase 2<br/>Invoice engine + story_25 wallet"]
-    C2 --> C3["story_28 auto-collection<br/>story_26 re-rating & credit notes"]
-    A2 --> POST["Post-core:<br/>29 rev-rec · 31 simulation · 32 groups<br/>· 34 margin · 35 warehouse export"]
-    B2 --> POST
-    C3 --> POST
+    CP["Phase CP (D-01)<br/>Control-plane foundation"] --> P0["Phase 0 (D-02, D-03)<br/>Event ingestion"]
+    P0 --> P1["Phase 1 (D-04)<br/>Analytics worker → ClickHouse"]
+    P1 --> A1["Track A: Phase 3 (D-05)<br/>Keys & BYOK"]
+    A1 --> A2["Track A: Phase 5 (D-06)<br/>LiteLLM gateway — M1"]
+    P1 --> B1["Track B: Phase 4 (D-07)<br/>Analytics APIs + BFF"]
+    B1 --> B2["Track B (D-08)<br/>Dashboards — M2"]
+    P1 --> C1["Track C prereqs (D-09, D-10):<br/>test clocks · rating engine ·<br/>meters + catalog/pricing/subscriptions"]
+    C1 --> C2["Track C (D-11–D-13): counters &<br/>enforcement — M3 · invoice engine — M4 · wallet"]
+    C2 --> C3["Track C (D-14, D-15):<br/>auto-collection + re-rating — M5"]
+    C2 --> P16["D-16 rev-rec + rollup<br/>(also needs D-13 wallet)"]
+    C2 --> P17["D-17 simulation ·<br/>groups · margin"]
+    C3 --> P18["D-18 warehouse export +<br/>reports/webhooks/alerts (needs D-13–D-16)"]
+    P16 --> P18
+    A2 --> T19["UI tail D-19: portal & policy<br/>(needs D-05, D-08, D-12–D-14)"]
+    B2 --> T19
+    C3 --> T19
+    B2 --> T20["UI tail D-20: AI surfaces<br/>(needs D-07, D-08, D-12)"]
+    C2 --> T20
 ```
 
-Critical path: **CP → 0 → 1 → Track C → first invoice.** Tracks A and B never block it.
+Critical path: **CP → 0 → 1 → Track C → first invoice (D-12/M4).** Tracks A and B never block it; the UI tail (D-19/D-20) closes the program.
 
 ## 3. The spine
 
@@ -106,7 +112,7 @@ This ledger is reconciled 1:1 with DISPATCH.md's 21 units — every story listed
 | Phase/Track | Dispatch units | Backend stories | Uiflow stories |
 |---|---|---|---|
 | CP | D-01 | — (story_3 consumer side) | organization, onboarding, customer, customer_management, end_user_management |
-| 0 | D-02, D-03 | 1, 2, 3, 4, 5, 6 | — |
+| 0 | D-02, D-03 | 1, 2, 3, 4, 5; story_6 **split, not read verbatim**: its ClickHouse DDL is materialized as `migrations/clickhouse/001` (copied in D-00), its health/ready/observability criteria are carried by D-00/D-02 (D-02 reads those sections only), and its Postgres DDL is **superseded** by ADR-001 §2.1 + SCAFFOLD §2 (Prisma owns all Postgres DDL) | — |
 | 1 | D-04 | 7, 8, 9, 10 | — |
 | A | D-05, D-06 | 11, 12, 13, 14, 20, 21, 22, 23, 24 | — (portal UI for keys lands in D-19) |
 | B | D-07, D-08 | 15, 16, 17, 18, 19 | org overview, team usage, platform analytics, end-user dashboard, end-user events |
