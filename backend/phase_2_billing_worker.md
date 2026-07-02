@@ -440,17 +440,19 @@ internal/
 
 ## Implementation Stories (Planned)
 
+Stories 25–35 are standalone files (authored per ADR-001); stories 36–40 are phase-2-local and planned below.
+
 | Story | Name | Depends On | Summary |
 |---|---|---|---|
-| **Story 25** | Kafka Consumer & Redis Real-Time Counters | Phase 0 (Kafka topic, UsageEvent model) | Consume usage-events, increment Redis token/spend counters per org/customer/end-user, Pub/Sub publish, anniversary resets |
-| **Story 26** | Entitlement Enforcement API | Story 25 (counters exist) | GET /v1/entitlements/check, SOFT/HARD limit checks, wallet balance check, customer override priority, <5ms response |
-| **Story 27** | Rating Configuration & Cache | Control-plane catalog tables | Read-side cache over plans/plan_versions/charges/pricing_models/rate_card_versions/contract_rates; waterfall resolver; rating-exceptions report |
-| **Story 28** | Credit System & FEFO Engine | billing.credits tables | Credit types, FEFO consumption, credit ledger, grant/consume APIs |
-| **Story 29** | Invoice Generation Engine | Stories 27 (rates), 28 (credits), Phase 1 (ClickHouse) | Anniversary scan, pure invoice function, typed line items, proration, input snapshots, draft/grace/finalize, billing groups, tax, state machine |
-| **Story 30** | Prepaid Wallet & Auto Top-Up | Story 25 (hot path), Stripe | Hot-path burndown, wallet_transactions ledger, threshold top-up via PaymentIntent, zero-balance blocking (CR-2) |
-| **Story 31** | Re-Rating Engine & Credit Notes | Story 29 (invoices + snapshots) | Re-rating runs, diff vs issued invoice, credit/debit note issuance and state machine (CR-1, CR-4) |
-| **Story 32** | Payment Auto-Collection, Dunning & Reconciliation | Stories 29-31 | Auto-charge on finalization, smart retries, dunning EMAIL/SMS/SUSPEND/ESCALATE, manual payment recording, nightly Redis↔ClickHouse reconciliation (CR-6) |
-| **Story 33** | Health, Observability & Deployment | Stories 25-32 | Health/readiness endpoints, structured logging, OpenTelemetry, Dockerfile, graceful shutdown, test-clock hooks (CR-12) |
+| **Story 36** | Kafka Consumer & Redis Real-Time Counters | Phase 0 (Kafka topic, UsageEvent model) | Consume usage-events, increment Redis token/spend counters per org/customer/end-user, Pub/Sub publish, anniversary resets |
+| **Story 37** | Entitlement Enforcement API | Story 36 (counters exist) | GET /v1/entitlements/check, SOFT/HARD limit checks, wallet balance check, customer override priority, <5ms response |
+| **Story 27** (file: `story_27_rate_resolution_engine.md`) | Rate Resolution Engine | Control-plane catalog tables | Waterfall resolver over plans/plan_versions/charges/pricing_models/rate_card_versions/contract_rates; read-side cache; rating-exceptions report |
+| **Story 38** | Credit System & FEFO Engine | billing.credits tables | Credit types, FEFO consumption, credit ledger, grant/consume APIs |
+| **Story 39** | Invoice Generation Engine | Stories 27 (rates), 38 (credits), Phase 1 (ClickHouse) | Anniversary scan, pure invoice function, typed line items, proration, input snapshots, draft/grace/finalize, billing groups (story_32), tax, state machine |
+| **Story 25** (file: `story_25_wallet_and_auto_topup.md`) | Prepaid Wallet & Auto Top-Up | Story 36 (hot path), Stripe | Hot-path burndown, wallet_transactions ledger, threshold top-up via PaymentIntent, zero-balance blocking (CR-2) |
+| **Story 26** (file: `story_26_rerating_and_credit_notes.md`) | Re-Rating Engine & Credit Notes | Story 39 (invoices + snapshots) | Re-rating runs, diff vs issued invoice, credit/debit note issuance and state machine (CR-1, CR-4) |
+| **Story 28** (file: `story_28_payment_auto_collection.md`) + dunning | Payment Auto-Collection, Dunning & Reconciliation | Stories 39, 25, 26 | Auto-charge on finalization, smart retries, dunning EMAIL/SMS/SUSPEND/ESCALATE, manual payment recording, nightly Redis↔ClickHouse reconciliation (CR-6) |
+| **Story 40** | Health, Observability & Deployment | All phase-2 stories | Health/readiness endpoints, structured logging, OpenTelemetry, Dockerfile, graceful shutdown, test-clock hooks (story_33, CR-12) |
 
 ---
 
