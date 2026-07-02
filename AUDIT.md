@@ -215,7 +215,7 @@ file:line/evidence). Append it to AUDIT_LOG.md. Do not fix anything.
 - Hash correctness: key_hash equals sha256(raw) — recompute for a captured raw key.
 - Budget fields: create key with budget_limit_usd/rpm — verify persisted and returned
   masked (no raw key in GET list, key_prefix only).
-- security_audit_logs: 4 violation types each produce a row with correct violation_type,
+- audit.security_audit_logs: 4 violation types each produce a row with correct violation_type,
   IP from X-Forwarded-For, ≤1000-char details, org_id NULL for unresolvable-org
   invalid keys (ERD C-25 — a literal "unknown" string or a synthetic org row is a
   BLOCKER), key_prefix + reason present in details for those rows.
@@ -235,7 +235,7 @@ file:line/evidence). Append it to AUDIT_LOG.md. Do not fix anything.
 - Outage resilience: stop ingest-api, run 5 completions, start it → all 5 events
   eventually in ClickHouse (dead-letter replay); zero events = BLOCKER.
 - Guardrails: prompt containing a fake API key pattern + PII → pre-call hook masks/blocks
-  per story_23; security_audit_logs guardrail_blocked row written.
+  per story_23; audit.security_audit_logs guardrail_blocked row written.
 - Budget: set max_budget below a completion's cost → blocked; verify wallet-vs-budget
   precedence note is honored where implemented (stub acceptable pre-D-13; check HANDOFF).
 ```
@@ -345,6 +345,11 @@ file:line/evidence). Append it to AUDIT_LOG.md. Do not fix anything.
   deltas sum = counter delta; the message contract is documented in HANDOFF.md.
   (Dashboard live-update is checked here ONLY if D-08 was merged before D-11 —
   otherwise it belongs to D-08's audit; do not fail D-11 for Track B's absence.)
+- Story 40 initial ops slice: /health returns 200 with no dependency checks; /ready
+  checks Redis/Kafka/Postgres and returns 503 when any one is stopped; the consumer
+  and enforcement paths emit OTel spans and slog JSON logs with the expected fields;
+  SIGTERM drains in-flight work without losing counter updates (Dockerfile +
+  test-clock hooks are D-12's completion, not here).
 ```
 
 ## A-12 — Audit: invoice engine
@@ -369,6 +374,10 @@ file:line/evidence). Append it to AUDIT_LOG.md. Do not fix anything.
 - Grace: event at period_end + 1h lands on draft; at finalize + 1s does NOT (and
   invoice hash unchanged).
 - Zero-rating: unrated meter usage → rating_exceptions row, invoice has NO zero line.
+- Story 40 completion: the billing-worker Dockerfile builds and runs; all billing time
+  flows through BillingClock/test-clock hooks (purity grep already gates this); SIGTERM
+  during an in-flight invoice run drains or resumes cleanly with NO partial or corrupt
+  invoice/line/ledger artifacts (inspect the DB after the kill).
 ```
 
 ## A-13 — Audit: wallet
@@ -482,6 +491,15 @@ UNIT:
 - GDPR: run a delete request → end-user PII anonymized in Postgres, financial records
   intact, ClickHouse handled per retention policy; export request produces the
   documented bundle.
+- Reports: a scheduled report run produces the configured PDF/CSV/Excel output; the
+  email arrives via dev SMTP (MailHog) with the correct attachment; report totals match
+  the source billing tables / phase-4 API responses (no re-aggregation drift).
+- Alerts: create an alert + channel, trip its threshold on fixture data → a delivery/
+  history row is written and the channel fires; CUSTOMER/END_USER cannot read or mutate
+  org alert config (403).
+- Audit/compliance UI: the audit-log viewer over platform.audit_logs filters by actor/
+  resource_type/date and never leaks another org's rows; it is read-only (no UPDATE/
+  DELETE path); security violations remain in audit.security_audit_logs, not this view.
 CLOSING SWEEP (system-level, gates "complete"):
 - Run every prior audit's BLOCKER-class check once more on the final commit (they are
   regression gates now): purity grep, M-6 grep, one-writer SQL audit, golden test in
@@ -511,6 +529,12 @@ CLOSING SWEEP (system-level, gates "complete"):
 - Tax config: exemption states (pending/verified/rejected) gate application — a
   REJECTED exemption must NOT reduce tax on the next test-clock invoice; verified one
   must, with tax_calculation_audit citing the exemption_id.
+- Tax IDs: register/list a customer tax ID; malformed or unverified IDs are rejected/
+  flagged per the story; a verified VAT tax ID drives reverse-charge annotation on the
+  next test-clock invoice and is recorded in tax_calculation_audit.
+- Currency config: update base/supported currencies + display FX rates; a customer with
+  an active subscription cannot have its billing currency changed; display-only FX must
+  never alter invoice arithmetic (BILLING_MATH X-2 — a math change here is a BLOCKER).
 - Customer portal: CUSTOMER-role session — walk every /my-account page and diff
   network payloads for any other customer's ids/amounts (leakage = BLOCKER);
   pay flow uses the D-14 path (no parallel payment implementation).
