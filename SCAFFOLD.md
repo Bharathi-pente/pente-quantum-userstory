@@ -75,7 +75,7 @@ Smoke test: `curl -H "X-API-Key: sk-live-dev-000000000000" -d @scripts/sample-ev
 - **Money on the wire:** decimal strings, never numbers (BILLING_MATH M-1).
 - **Errors:** `{"error": {"code": "MACHINE_READABLE", "message": "human text", "details": {}}}` on every service; codes from the story docs.
 - **Testing:** every story's TC list becomes a test file of the same numbering (`TC-01` → `test_tc01_...`); billing logic tests run on test clocks (story_33) — no sleeps, no wall-clock.
-- **CI order:** lint → unit → `prisma migrate deploy` against ephemeral Postgres → integration (per-service) → the BILLING_MATH §9 worked example as a golden test in the invoice engine suite.
+- **CI order:** lint → `scripts/regression-gates.sh` (TEST_PLAN G2 static gates) → unit (with TEST_PLAN G1 coverage floors) → `prisma migrate deploy` against ephemeral Postgres → integration (per-service, full cumulative suite) → perf job asserting `.perf-baselines.json` (TEST_PLAN G3) → the BILLING_MATH §9 worked example as a golden test in the invoice engine suite.
 
 ## 7. What is still deliberately deferred
 

@@ -1,7 +1,7 @@
 # QuantumBilling — Build Plan
 
 **Status:** v1.2 — dependency edges and the §6 coverage ledger reconciled with DISPATCH.md v1.2 (21 units) · 2026-07-02
-**Companions:** [ADR-001](ARCHITECTURE_DECISION.md) (architecture) · [ERD.md](ERD.md) (schema)
+**Companions:** [ADR-001](ARCHITECTURE_DECISION.md) (architecture) · [ERD.md](ERD.md) (schema) · [TEST_PLAN.md](TEST_PLAN.md) (quality gates binding on every dispatch unit)
 **Purpose:** Dependency-correct build sequence. The backend docs' linear Phase 0→1→2→3→4→5 order predates ADR-001 and is wrong in three places: it lacks a control-plane phase (now a hard prerequisite of Phase 0 per ADR-001 §2.1), it places Phase 2 too early (it has the widest dependency fan-in and nothing depends on it), and it places Phase 3 too late (it gates real ingest auth and all of Phase 5). This plan replaces the linear order with a spine plus three parallel tracks.
 
 ---

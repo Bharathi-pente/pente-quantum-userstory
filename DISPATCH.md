@@ -1,7 +1,7 @@
 # QuantumBilling — Agentic Dispatch Plan
 
 **Status:** v1.2 — 21 units; coverage-ledger reconciliation (meters scheduled, UI tail D-19/D-20 added, phase_2 story 40 homed) · 2026-07-02
-**Companions:** [BUILD_PLAN.md](BUILD_PLAN.md) (sequence) · [AUDIT.md](AUDIT.md) (paired verification) · [SCAFFOLD.md](SCAFFOLD.md) · [BILLING_MATH.md](BILLING_MATH.md)
+**Companions:** [BUILD_PLAN.md](BUILD_PLAN.md) (sequence) · [AUDIT.md](AUDIT.md) (paired verification) · [TEST_PLAN.md](TEST_PLAN.md) (quality gates) · [SCAFFOLD.md](SCAFFOLD.md) · [BILLING_MATH.md](BILLING_MATH.md)
 
 ## Preflight (before D-00, once)
 
@@ -39,6 +39,7 @@ Rules that apply to **every** unit (the prompts assume them):
    ```
 
 7. After each unit, run the paired audit (AUDIT.md A-XX) with a **different** agent before dispatching the next **dependent** unit (parallel tracks don't wait on each other's audits).
+8. **Quality gates (TEST_PLAN.md §2) are binding on every unit:** coverage floors (G1) enforced in CI; the FULL cumulative suite + `scripts/regression-gates.sh` run on every unit, never just the unit's own tests (G2); any measured perf criterion records its baseline in `.perf-baselines.json` and CI asserts it thereafter (G3); the fault-matrix cells TEST_PLAN §G4 assigns to a unit are done criteria for that unit, even where the unit's prompt below predates them; test data comes from the deterministic tiers in §G5 (failing tests name their seed).
 
 ## Dispatch ledger
 
@@ -109,7 +110,15 @@ DELIVERABLES
    (lint → unit → prisma migrate deploy against the compose Postgres → integration)
    and exits non-zero on any failure — this is the offline substitute every later
    unit uses when hosted CI is unreachable (global rule 5).
-9. Top-level README.md: the SCAFFOLD.md §5 dev loop, copy-pasteable, including the
+9. Test-gate scaffolding per docs/TEST_PLAN.md §2 (global rule 8):
+   scripts/regression-gates.sh implementing the G2 static gates (purity grep,
+   INCRBYFLOAT-on-wallet grep, float-money grep, one-writer Prisma-write grep,
+   DDL-outside-Prisma grep, golden-test-present check) — each gate passes trivially
+   until its subject code exists, and the script is wired into CI + verify-local.sh;
+   coverage thresholds per TEST_PLAN G1 configured in each service's test tooling;
+   an empty `.perf-baselines.json` at the monorepo root with the G3 schema and a CI
+   perf job that asserts against it (no-op while empty).
+10. Top-level README.md: the SCAFFOLD.md §5 dev loop, copy-pasteable, including the
    compose profile usage (core by default; --profile gateway at D-06;
    --profile observability optional).
 
@@ -648,6 +657,10 @@ DELIVERABLES (engine/internal/invoice + billing-worker wiring)
 4. THE GOLDEN TEST: BILLING_MATH §9 worked example, implemented end-to-end on a test
    clock (seed the exact plan/usage/credits; assert every intermediate figure and the
    final $0.00 total to the cent). CI-blocking.
+4a. scripts/gen-history per TEST_PLAN §G5 tier 3: extend the D-04 fixture generator
+   to produce N months of deterministic history for a cohort (plan changes, trials,
+   late events, wallet activity) on a test clock — the invoice-engine integration
+   tests (and later D-15/D-17 scenarios) run against it.
 5. Reproducibility test: run the invoice function twice on identical inputs →
    byte-identical invoice JSON; run after inserting an unrelated org's events → unchanged.
 

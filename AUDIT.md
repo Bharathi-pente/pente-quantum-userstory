@@ -1,15 +1,16 @@
 # QuantumBilling — Dispatch Audit Plan
 
-**Status:** v1.2 — 21 audits, aligned to DISPATCH.md v1.2 · 2026-07-02
+**Status:** v1.2 — 21 audits, aligned to DISPATCH.md v1.2 + TEST_PLAN.md gates · 2026-07-02
 **Purpose:** Every dispatch unit D-XX is verified by an **independent audit agent** running the paired prompt A-XX below, in a fresh session, before any dependent unit is dispatched. The audit agent must not be the agent that built the unit.
 
 ## Audit contract (applies to every A-XX)
 
 1. The audit agent has read-only intent: it may run builds, tests, containers, and queries, but must not fix anything — findings only. (Fixes go back through a dispatch session.)
-2. Every audit verifies four layers, in order:
+2. Every audit verifies five layers, in order:
    - **Existence** — the deliverables are present where the dispatch prompt said.
    - **Conformance** — conventions hold (SCAFFOLD.md §6, one-writer rule, BILLING_MATH rules where money is involved; spot-check, don't assume).
    - **Behavior** — the done-criteria are *re-executed*, not read from HANDOFF.md. HANDOFF.md claims are hypotheses to test.
+   - **Gates (TEST_PLAN.md §2)** — the coverage report meets the G1 floors for every package this unit touched (read the actual CI/coverage output, not the HANDOFF); the CI run executed the FULL cumulative suite + `regression-gates.sh`, not just this unit's tests (G2); any perf-measuring criterion updated `.perf-baselines.json` and the perf job asserted it (G3); the fault-matrix cells §G4 assigns to this unit were demonstrated (G4); volume/history tests used the deterministic generators with recorded seeds (G5). A floor miss on a money path, a suite run scoped to the unit only, or an unrecorded baseline is a MAJOR; a disabled/skipped regression gate is a BLOCKER.
    - **Drift** — nothing out of scope was changed (git diff against the pre-unit commit; flag surprise files, spec-repo edits, dependency additions with no justification).
 3. Output format (mandatory):
    - `VERDICT: PASS | PASS-WITH-FINDINGS | FAIL`
@@ -106,6 +107,14 @@ VERIFY, IN ORDER:
   scripts/verify-local.sh and confirm it exercises the same steps in the same order
   (lint → unit → migrate → integration) and fails non-zero when a step is broken
   (temporarily break one lint rule to prove it).
+- Test-gate scaffolding (TEST_PLAN §2 / D-00 deliverable 9): scripts/regression-gates.sh
+  exists, is wired into BOTH CI and verify-local.sh, and each static gate actually
+  fires — plant one violation per gate in a scratch file (a time.Now() in a fake
+  engine/internal/invoice path, an INCRBYFLOAT on a wallet key, a float64 cost, a
+  Prisma invoice.create in control-plane src, a CREATE TABLE in Go source) and prove
+  each is caught, then remove the plants. Coverage thresholds are configured per
+  TEST_PLAN G1 (break them to prove enforcement); `.perf-baselines.json` exists with
+  the G3 schema and the CI perf job references it.
 - Git protocol: HANDOFF.md records BASE_SHA and COMMIT_SHA; `git diff BASE_SHA..COMMIT_SHA`
   contains only the declared deliverables.
 
@@ -121,7 +130,7 @@ file:line/evidence). Append it to AUDIT_LOG.md. Do not fix anything.
 ---
 
 *Common preamble for every audit below (implied, do not omit when dispatching):*
-> You are the independent audit agent for dispatch unit D-XX. You did not build it; try to fail it. READ: docs/DISPATCH.md unit D-XX, docs/AUDIT.md contract, the docs the unit names. HANDOFF.md claims are hypotheses. Verify Existence → Conformance → Behavior (re-execute every done criterion) → Drift (git diff vs pre-unit commit). Output the verdict block; append to AUDIT_LOG.md; fix nothing.
+> You are the independent audit agent for dispatch unit D-XX. You did not build it; try to fail it. READ: docs/DISPATCH.md unit D-XX, docs/AUDIT.md contract, docs/TEST_PLAN.md §2, the docs the unit names. HANDOFF.md claims are hypotheses. Verify Existence → Conformance → Behavior (re-execute every done criterion) → Gates (coverage floors, full cumulative suite + regression-gates.sh ran, perf baselines updated/asserted, assigned fault-matrix cells demonstrated) → Drift (git diff vs pre-unit commit). Output the verdict block; append to AUDIT_LOG.md; fix nothing.
 
 ## A-01 — Audit: Phase CP
 
