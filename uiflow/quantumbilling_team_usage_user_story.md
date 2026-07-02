@@ -1,5 +1,7 @@
 # QuantumBilling User Story: Team Usage
 
+> Aligned with ADR-001 (2026-07-01).
+
 **QB-STORY-024** · Sprint 8 · Phase: Usage Tracking
 
 ---
@@ -20,17 +22,17 @@
 
 ## Description
 
-**As an ORG_ADMIN or SUPER_ADMIN**, I want to view and manage team usage metrics that break down API consumption by individual end users (team members) within an organization, so that I can identify top consumers, track usage patterns, allocate costs, and detect anomalies at the user level.
+**As an ORG_ADMIN or SUPER_ADMIN**, I want to view and manage team usage metrics that break down API consumption by individual end users (team members) within an organization, so that I can identify top consumers, track usage patterns, allocate costs, and detect anomalies at the end-user level.
 
 **As an END_USER**, I want to view my own usage metrics and event log, so that I can monitor my API consumption and understand my billing impact.
 
-**Core Concept:** Every API call made through the Real-time API is recorded as an **Event** tied to an **End User**. Team Usage aggregates these events per end user to show who is consuming what, enabling cost attribution, usage monitoring, and top-consumer identification.
+**Core Concept:** Every API call made through the Real-time API is recorded as an **Event** tied to an **End User**. The event lands in the Go usage plane (ingest API → Kafka → ClickHouse); the **Go phase-4 analytics APIs** aggregate these events per end user, and the NestJS BFF proxies those aggregates to this view for cost attribution, usage monitoring, and top-consumer identification (ADR-001 §2).
 
 Key concepts:
-- **End User** = an individual team member or API consumer within an organization
-- **Event** = a single API call recorded with usage metrics (input tokens, output tokens, cached tokens, latency, cost)
-- **Team Usage** = aggregated usage metrics per end user for a given time period
-- Events flow from the API → Events table → Aggregated per end user → Shown in Team Usage view
+- **End User** = an individual team member or API consumer within a customer account (`customer.end_users`)
+- **Event** = a single API call recorded with usage metrics (input tokens, output tokens, cached tokens, latency, cost), stored immutably in ClickHouse `events.usage_events` and read via `events.usage_events_dedup_v`
+- **Team Usage** = per-end-user aggregates for a given time period, served by `GET /v1/customers/{customer_id}/users/usage` (phase-4)
+- Events flow: API → Go ingest → Kafka → ClickHouse → phase-4 aggregation API → NestJS BFF → Team Usage view
 
 ---
 
@@ -39,39 +41,43 @@ Key concepts:
 ```
 End User (via API)
     │
-    │──► API Request ──► Real-time API records event
+    │──► API Request ──► LiteLLM callback / meter facade
     │                           │
     │                           ▼
-    │                    usage_events table
-    │                    ├── end_user_id
-    │                    ├── meter_id
-    │                    ├── input_tokens
-    │                    ├── output_tokens
-    │                    ├── cached_tokens
-    │                    ├── latency_ms
-    │                    ├── cost
-    │                    ├── model
-    │                    ├── timestamp
+    │                    Go ingest API ──► Kafka (usage-events)
+    │                           │
+    │                           ▼
+    │                    Go analytics worker
+    │                           │
+    │                           ▼
+    │                    ClickHouse events.usage_events
+    │                    (read via events.usage_events_dedup_v)
+    │                    ├── org_id / customer_id / end_user_id
+    │                    ├── input_tokens / output_tokens
+    │                    ├── thinking_tokens / total_tokens
+    │                    ├── latency / cost / model / status
+    │                    ├── timestamp_ms
     │
     ▼
-Team Usage Aggregation
+Go phase-4 analytics API
+GET /v1/customers/{customer_id}/users/usage
     │
     ▼
-SUM(events) GROUP BY end_user_id
+NestJS BFF (Keycloak JWT → scope → svc-to-svc call)
     │
     ▼
-Per-End-User Usage Report
+Per-End-User Usage Report (this view)
 ```
 
 ---
 
 ## RBAC Roles
 
-| Role | Can view team usage | Can view per-user breakdown | Can export | Can manage end users | Scope |
-|------|--------------------|---------------------------|------------|---------------------|-------|
+| Role | Can view team usage | Can view per-end-user breakdown | Can export | Can manage end users | Scope |
+|------|--------------------|--------------------------------|------------|---------------------|-------|
 | **SUPER_ADMIN** | Yes (all orgs) | Yes (all orgs) | Yes | Yes | Platform-wide |
 | **ORG_ADMIN** | Yes (own org) | Yes (own org) | Yes | Yes | Own org only |
-| **CUSTOMER** | Yes (own org, aggregate) | No (aggregate only) | Yes (aggregate) | No | Own org only |
+| **CUSTOMER** | Yes (own account, aggregate) | No (aggregate only) | Yes (aggregate) | No | Own account only |
 | **END_USER** | Yes (own only) | N/A | No | No | Own usage only |
 
 ---
@@ -87,23 +93,24 @@ Per-End-User Usage Report
    - **Total Requests** — count of all API calls
    - **Total Cost** — sum of all event costs
    - **Active Users** — count of end users with at least one event in the period
+   All four values come from the phase-4 per-end-user aggregation response (ClickHouse), proxied by the BFF.
 4. Each summary card is clickable and navigates to detailed view filtered by that metric.
 
 ### Usage by Team Member Table
 
-5. A table titled "Team Usage" lists all end users with recorded usage.
+5. A table titled "Team Usage" lists all end users with recorded usage, from `GET /v1/customers/{customer_id}/users/usage` (phase-4).
 6. Table columns:
-   - **End User** — name and email (from `end_users` table)
-   - **Input Tokens** — sum of input tokens
-   - **Output Tokens** — sum of output tokens
-   - **Cached Tokens** — sum of cached tokens
+   - **End User** — name and email (display lookup from `customer.end_users`)
+   - **Input Tokens** — aggregated input tokens
+   - **Output Tokens** — aggregated output tokens
+   - **Cached Tokens** — aggregated cached tokens
    - **Total Tokens** — sum of all three
-   - **% of Total** — this user's total as percentage of org total
+   - **% of Total** — this end user's total as percentage of the account total
    - **Requests** — count of API calls
    - **Est. Cost** — calculated from tokens × rate
 7. Table is sorted by **Total Tokens** descending by default.
-8. ORG_ADMIN can click on a row to **expand** and see per-model breakdown for that user.
-9. Clicking an end user's row opens their **Event Log** filtered to that user.
+8. ORG_ADMIN can click on a row to **expand** and see per-model breakdown for that end user (phase-4 model dimension).
+9. Clicking an end user's row opens their **Event Log** filtered to that end user.
 
 ### Expandable Row — Per-Model Breakdown
 
@@ -120,13 +127,13 @@ Per-End-User Usage Report
     - User Name (A–Z)
     - User Name (Z–A)
 13. **Filter** input allows searching by end user name or email.
-14. **Date Range** filter allows selecting a specific period (Last 7 days, Last 30 days, Last 90 days, Custom).
+14. **Date Range** filter allows selecting a specific period (Last 7 days, Last 30 days, Last 90 days, Custom); the BFF forwards the window to phase-4 as query parameters.
 15. **Model** filter allows filtering by specific AI model.
 16. Filters update the table and summary cards in real-time.
 
 ### Export
 
-17. **Export** button generates a CSV of the current table view.
+17. **Export** button generates a CSV of the current table view, built from the phase-4 API response (no database export path).
 18. Export columns: End User, Email, Input Tokens, Output Tokens, Cached Tokens, Total Tokens, % of Total, Requests, Est. Cost.
 19. Export filename format: `team-usage-{orgId}-{date}.csv`.
 
@@ -134,18 +141,18 @@ Per-End-User Usage Report
 
 20. A "Top 5 Consumers" panel shows the top 5 end users by token volume.
 21. Each entry shows: rank, name, total tokens, % share, and a progress bar.
-22. Clicking an entry navigates to that user's detailed usage view.
+22. Clicking an entry navigates to that end user's detailed usage view.
 
 ### Usage Trend Chart
 
-23. A line/area chart shows daily token consumption over the billing period.
+23. A line/area chart shows daily token consumption over the billing period, from `GET /v1/analytics/daily` (phase-4) scoped to the account.
 24. Three series: Input Tokens, Output Tokens, Cached Tokens.
 25. Hovering a data point shows tooltip with all three values for that day.
 26. Period toggle: "This Period" | "Previous Period" for comparison.
 
 ### End User Event Log
 
-27. Clicking "View Events" on an end user row opens their event log.
+27. Clicking "View Events" on an end user row opens their event log (phase-4 per-end-user activity, read from ClickHouse `events.usage_events_dedup_v`).
 28. Event log shows individual API calls with:
     - Timestamp
     - AI Model
@@ -161,12 +168,12 @@ Per-End-User Usage Report
 31. END_USER can access "My Usage" at `/my-usage`.
 32. Shows personal usage metrics: Total Tokens, Total Requests, Total Cost, Error Rate.
 33. "My Events" tab shows the END_USER's own event log (same columns as above).
-34. END_USER cannot see any other user's usage.
+34. END_USER cannot see any other end user's usage; the BFF pins the phase-4 scope to the actor's own `end_user_id`.
 
 ### CUSTOMER Aggregate View
 
-35. CUSTOMER can view team usage in the portal but sees **aggregate org-level data only**.
-36. Per-user breakdown is **not visible** to CUSTOMER.
+35. CUSTOMER can view team usage in the portal but sees **aggregate account-level data only** (customer-scoped).
+36. Per-end-user breakdown is **not visible** to CUSTOMER — the BFF returns aggregate totals only and never forwards `end_user_id`-level rows.
 37. CUSTOMER can export the aggregate team usage report.
 
 ---
@@ -177,16 +184,16 @@ Per-End-User Usage Report
 
 **Given:** org `acme` has multiple end users with recorded usage
 **When:** ORG_ADMIN navigates to `/organizations/acme/team-usage`
-**Then:** summary cards show Total Usage, Total Requests, Total Cost, Active Users for the billing period
+**Then:** summary cards show Total Usage, Total Requests, Total Cost, Active Users for the billing period (from the phase-4 response)
 **And:** Team Usage table lists all end users with their token breakdown
 
 ---
 
-### TC-02 — Per-user token breakdown
+### TC-02 — Per-end-user token breakdown
 
 **Given:** org `acme` has end users: John, Jane, Bob
 **When:** viewing the Team Usage table
-**Then:** each row shows: Input Tokens, Output Tokens, Cached Tokens, Total Tokens, % of Total for that user
+**Then:** each row shows: Input Tokens, Output Tokens, Cached Tokens, Total Tokens, % of Total for that end user (from `GET /v1/customers/{customer_id}/users/usage`)
 **And:** rows are sorted by Total Tokens descending
 
 ---
@@ -208,7 +215,7 @@ Per-End-User Usage Report
 
 ---
 
-### TC-05 — Filter by user name
+### TC-05 — Filter by end user name
 
 **Given:** org `acme` has end users including "john@acme.com"
 **When:** entering "john" in the Filter field
@@ -220,13 +227,13 @@ Per-End-User Usage Report
 
 **Given:** org `acme` has usage for Last 30 days
 **When:** selecting "Last 7 days" from date range filter
-**Then:** table and summary cards update to show only the last 7 days
+**Then:** table and summary cards update to show only the last 7 days (BFF re-queries phase-4 with the new window)
 
 ---
 
 ### TC-07 — Filter by model
 
-**Given:** org `acme` has users using GPT-4 and Claude 3
+**Given:** org `acme` has end users using GPT-4 and Claude 3
 **When:** selecting "GPT-4" from model filter
 **Then:** table shows only usage from GPT-4 model events
 
@@ -236,7 +243,7 @@ Per-End-User Usage Report
 
 **Given:** org `acme` has team usage data
 **When:** clicking "Export" button
-**Then:** a CSV file is downloaded with columns: End User, Email, Input Tokens, Output Tokens, Cached Tokens, Total Tokens, % of Total, Requests, Est. Cost
+**Then:** a CSV file is downloaded with columns: End User, Email, Input Tokens, Output Tokens, Cached Tokens, Total Tokens, % of Total, Requests, Est. Cost — generated from the phase-4 API response
 
 ---
 
@@ -244,15 +251,15 @@ Per-End-User Usage Report
 
 **Given:** org `acme` has multiple end users
 **When:** viewing the Top 5 Consumers panel
-**Then:** the top 5 users by token volume are listed with rank, name, tokens, % share, and progress bar
-**And:** clicking an entry navigates to that user's detail view
+**Then:** the top 5 end users by token volume are listed with rank, name, tokens, % share, and progress bar
+**And:** clicking an entry navigates to that end user's detail view
 
 ---
 
 ### TC-10 — View end user event log
 
 **Given:** ORG_ADMIN clicks "View Events" on John Smith's row
-**Then:** a filtered event log is shown with John's individual API calls
+**Then:** a filtered event log is shown with John's individual API calls (phase-4, ClickHouse-backed)
 **And:** events are paginated (50 per page)
 
 ---
@@ -261,7 +268,7 @@ Per-End-User Usage Report
 
 **Given:** org `acme` has 30 days of usage history
 **When:** viewing the Usage Trend section
-**Then:** an area chart shows daily token consumption with three series (input, output, cached)
+**Then:** an area chart shows daily token consumption with three series (input, output, cached) from `GET /v1/analytics/daily`
 **And:** hovering a data point shows tooltip with exact values
 
 ---
@@ -277,10 +284,10 @@ Per-End-User Usage Report
 
 ### TC-13 — CUSTOMER sees aggregate only
 
-**Given:** authenticated CUSTOMER for org `acme`
+**Given:** authenticated CUSTOMER for account `acme`
 **When:** navigating to team usage in the portal
-**Then:** org-level aggregate metrics are visible
-**And:** per-user breakdown is NOT displayed
+**Then:** account-level aggregate metrics are visible
+**And:** per-end-user breakdown is NOT displayed
 **And:** "Export" button is available for aggregate data
 
 ---
@@ -296,52 +303,62 @@ Per-End-User Usage Report
 
 ## API Endpoints
 
-| Method | Path | Description | Auth |
-|--------|------|-------------|------|
-| `GET` | `/api/v1/organizations/:orgId/team-usage` | Aggregated team usage summary for the period | JWT · Guard: `OrgAdminGuard` or `SuperAdminGuard` |
-| `GET` | `/api/v1/organizations/:orgId/team-usage/users` | Per-end-user token breakdown | JWT · Guard: `OrgAdminGuard` or `SuperAdminGuard` · Query: `?period_start=&period_end=&sort=&user_filter=&model=` |
-| `GET` | `/api/v1/organizations/:orgId/team-usage/trend` | Daily usage trend data | JWT · Guard: `OrgAdminGuard` or `SuperAdminGuard` · Query: `?period_start=&period_end=` |
-| `GET` | `/api/v1/organizations/:orgId/team-usage/top-consumers` | Top N end users by usage | JWT · Guard: `OrgAdminGuard` or `SuperAdminGuard` · Query: `?limit=5` |
-| `GET` | `/api/v1/end-users/:endUserId/events` | Event log for a specific end user | JWT · Guard: `OrgAdminGuard` or `SuperAdminGuard` or `EndUserGuard` · Query: `?period_start=&period_end=&model=&status=&page=&limit=` |
-| `GET` | `/api/v1/end-users/:endUserId/usage-summary` | Usage summary for a specific end user | JWT · Guard: `OrgAdminGuard` or `SuperAdminGuard` or `EndUserGuard` |
-| `GET` | `/api/v1/platform/team-usage` | Cross-org team usage (SuperAdmin) | JWT · Guard: `SuperAdminGuard` · Query: `?org_id=&period_start=&period_end=` |
+All usage endpoints below are **BFF proxies** (ADR-001 §2.2): NestJS validates the Keycloak JWT, derives the `org_id`/`customer_id`/`end_user_id` scope, and forwards to the Go phase-4 analytics APIs with service-to-service auth carrying the resolved scope.
+
+| Method | Path (BFF) | Upstream (Go phase-4 → ClickHouse) | Description | Auth |
+|--------|------------|-------------------------------------|-------------|------|
+| `GET` | `/api/v1/organizations/:orgId/team-usage` | `GET /v1/orgs/{org_id}/summary` + `GET /v1/orgs/{org_id}/customers/usage` | Aggregated team usage summary for the period | JWT · Guard: `OrgAdminGuard` or `SuperAdminGuard` |
+| `GET` | `/api/v1/organizations/:orgId/team-usage/users` | `GET /v1/customers/{customer_id}/users/usage` | Per-end-user token breakdown | JWT · Guard: `OrgAdminGuard` or `SuperAdminGuard` · Query: `?period_start=&period_end=&sort=&user_filter=&model=` |
+| `GET` | `/api/v1/organizations/:orgId/team-usage/trend` | `GET /v1/analytics/daily` | Daily usage trend data | JWT · Guard: `OrgAdminGuard` or `SuperAdminGuard` · Query: `?period_start=&period_end=` |
+| `GET` | `/api/v1/organizations/:orgId/team-usage/top-consumers` | `GET /v1/customers/{customer_id}/users/usage` (top-N) | Top N end users by usage | JWT · Guard: `OrgAdminGuard` or `SuperAdminGuard` · Query: `?limit=5` |
+| `GET` | `/api/v1/end-users/:endUserId/events` | phase-4 per-end-user activity endpoint | Event log for a specific end user | JWT · Guard: `OrgAdminGuard` or `SuperAdminGuard` or `EndUserGuard` · Query: `?period_start=&period_end=&model=&status=&page=&limit=` |
+| `GET` | `/api/v1/end-users/:endUserId/usage-summary` | phase-4 per-end-user summary | Usage summary for a specific end user | JWT · Guard: `OrgAdminGuard` or `SuperAdminGuard` or `EndUserGuard` |
+| `GET` | `/api/v1/platform/team-usage` | `GET /v1/orgs/{org_id}/customers/usage` (per selected org) | Cross-org team usage (SuperAdmin) | JWT · Guard: `SuperAdminGuard` · Query: `?org_id=&period_start=&period_end=` |
+
+> Phase-4 paths were renamed `tenants` → `customers` per ADR-001 §2.1.
 
 ---
 
 ## Data Tables Used
 
-| Table | Schema | Operation | Key Columns |
-|-------|--------|-----------|-------------|
-| `usage_events` | `billing` | SELECT · SUM · COUNT | `id, end_user_id, org_id, meter_id, input_tokens, output_tokens, cached_tokens, latency_ms, cost, model, status, event_timestamp` |
-| `end_users` | `customer` | SELECT | `id, org_id, external_user_id, name, email, status, created_at` |
-| `meters` | `catalog` | SELECT | `id, name, event_type, aggregation, field` |
+| Table / Source | Schema / System | Operation | Key Columns / Fields |
+|----------------|-----------------|-----------|----------------------|
+| Go phase-4 API (ClickHouse `events.usage_events_dedup_v`) | usage plane | `GET /v1/customers/{customer_id}/users/usage` | `end_user_id, input_tokens, output_tokens, total_tokens, request count, cost, model` |
+| Go phase-4 API (ClickHouse `events.usage_events_dedup_v`) | usage plane | `GET /v1/orgs/{org_id}/customers/usage` | `customer_id, token totals, cost` |
+| Go phase-4 API (ClickHouse `events.usage_events_dedup_v`) | usage plane | `GET /v1/analytics/daily` · per-end-user activity | `date, tokens, cost, latency, status, timestamp_ms` |
+| `end_users` | `customer` | SELECT (display names) | `id, customer_id, org_id, external_user_id, name, email, status, created_at` |
+| `meters` | `catalog` | SELECT (display names) | `id, name, event_type, aggregation, field` |
 | `organizations` | `identity` | SELECT | `id, name` |
-| `subscriptions` | `billing` | SELECT | `id, org_id, status, billing_period` |
-| `pricing_models` | `catalog` | SELECT | `id, meter_id, unit_price` |
+| `subscriptions` | `customer` | SELECT (billing period window) | `id, org_id, customer_id, status, billing_period, current_period_start, current_period_end` |
+| `pricing_models` | `catalog` | SELECT (rate lookup for Est. Cost) | `id, meter_id, pricing_type` |
+
+> No Postgres usage-event table exists (ADR-001 §2). Raw events live only in ClickHouse; all aggregation happens in the Go phase-4 APIs.
 
 ---
 
 ## Usage Calculation
 
+All aggregation below is performed by the Go phase-4 analytics APIs over ClickHouse `events.usage_events_dedup_v`; the BFF and UI only present the results.
+
 ### Token Totals
 ```
-Total Tokens (per user) = SUM(input_tokens) + SUM(output_tokens) + SUM(cached_tokens)
+Total Tokens (per end user) = input_tokens + output_tokens + cached_tokens (phase-4 aggregate)
 ```
 
 ### % of Total
 ```
-% of Total (per user) = (Total Tokens for user / Total Tokens for org) × 100
+% of Total (per end user) = (Total Tokens for end user / Total Tokens for account) × 100
 ```
 
-### Estimated Cost (per user)
+### Estimated Cost (per end user)
 ```
-Est. Cost = SUM(input_tokens × input_rate) + SUM(output_tokens × output_rate) + SUM(cached_tokens × cached_rate)
+Est. Cost = input_tokens × input_rate + output_tokens × output_rate + cached_tokens × cached_rate
 ```
-*Rates are pulled from the active pricing model for each meter.*
+*Rates resolve via the ADR-001 §3.3 waterfall (contract rate → pinned rate-card version → plan charge pricing model).*
 
 ### Aggregation Period
-- Default: current billing period (1st of month to today)
-- Supports custom date range
+- Default: current billing period (subscription anniversary window per ADR-001 §3.1)
+- Supports custom date range (forwarded to phase-4 as query parameters; period membership is by `timestamp_ms`)
 
 ---
 
@@ -350,12 +367,11 @@ Est. Cost = SUM(input_tokens × input_rate) + SUM(output_tokens × output_rate) 
 | Key | Description |
 |-----|-------------|
 | `TEAM_USAGE_REFRESH_INTERVAL_SEC` | Polling interval for team usage dashboard in seconds (default: `30`) |
-| `EVENT_RETENTION_DAYS` | Days to keep raw event data before archiving (default: `90`) |
-| `EVENT_AGGREGATION_ROLLUP` | Whether to roll up old events into hourly/daily aggregates (default: `true`) |
 | `TOP_CONSUMERS_LIMIT` | Default number of top consumers to display (default: `5`) |
 | `EVENTS_PAGE_SIZE` | Default pagination size for event log (default: `50`) |
-| `COST_CALCULATION_MODE` | How to calculate cost: `realtime` (per event) or `batch` (rollup) (default: `realtime`) |
-| `DATABASE_URL` | PostgreSQL connection string (Prisma) |
+| `ANALYTICS_API_BASE_URL` | Base URL of the Go phase-4 analytics API |
+| `ANALYTICS_API_SERVICE_TOKEN` | Service-to-service auth credential for BFF → phase-4 calls (ADR-001 §2.2) |
+| `DATABASE_URL` | PostgreSQL connection string (Prisma — control-plane lookups only) |
 | `KEYCLOAK_URL` | Keycloak server base URL |
 | `KEYCLOAK_REALM` | `quantumbilling` |
 
@@ -386,9 +402,9 @@ Accessible at `/organizations/:orgId/team-usage`.
 | Column | Description |
 |--------|-------------|
 | End User | Avatar, name, email |
-| Input Tokens | Sum of input tokens (formatted) |
-| Output Tokens | Sum of output tokens (formatted) |
-| Cached Tokens | Sum of cached tokens (formatted) |
+| Input Tokens | Input tokens (formatted, phase-4 aggregate) |
+| Output Tokens | Output tokens (formatted, phase-4 aggregate) |
+| Cached Tokens | Cached tokens (formatted, phase-4 aggregate) |
 | Total Tokens | Sum of all tokens (formatted) |
 | % of Total | Percentage bar + number |
 | Requests | Count of API calls |
@@ -397,7 +413,7 @@ Accessible at `/organizations/:orgId/team-usage`.
 
 **Features:**
 - Sortable columns (dropdown: Usage High-Low, Usage Low-High, Name A-Z, Name Z-A)
-- Filter input for user search
+- Filter input for end user search
 - Model filter dropdown
 - Expandable rows for per-model breakdown
 - Pagination
@@ -419,7 +435,7 @@ Accessible at `/organizations/:orgId/team-usage`.
 - Name + avatar
 - Total tokens
 - % share (with progress bar)
-- Clickable → navigates to user detail
+- Clickable → navigates to end user detail
 
 ### Usage Trend Chart
 
@@ -431,7 +447,7 @@ Accessible at `/organizations/:orgId/team-usage`.
 
 ### End User Event Log
 
-Accessed by clicking "View Events" on a user row.
+Accessed by clicking "View Events" on an end user row.
 
 **Columns:**
 | Timestamp | Model | Input | Output | Cached | Latency | Cost | Status |
@@ -456,7 +472,7 @@ Accessible at `/my-usage` for authenticated END_USER.
 |-----------|-------------|---------|------------|
 | 45.2M | 234K | $156.78 | 0.3% |
 
-**My Events Tab:** Same event log as above, filtered to own user ID only.
+**My Events Tab:** Same event log as above, filtered to own `end_user_id` only.
 
 ---
 
@@ -468,16 +484,16 @@ Team Usage is a read-only aggregation view. No webhooks are triggered by viewing
 
 ## Dependencies & Notes for Agent
 
-- **Event Recording:** The Real-time API must record every API call to `usage_events` with `end_user_id`. This is the foundation of all usage tracking.
-- **End User Identification:** The API must pass `end_user_id` (from JWT or API key) when recording events. Events without `end_user_id` are attributed to "Unidentified".
-- **Cost Calculation:** Cost is calculated per event using the rate from the active pricing model. Formula: `input_tokens × input_rate + output_tokens × output_rate`.
+- **Event Recording:** Every API call is recorded by the Go usage plane (LiteLLM callback / meter facade → Go ingest API → Kafka → ClickHouse `events.usage_events`) with `end_user_id`. This is the foundation of all usage tracking — the control plane never writes usage rows.
+- **End User Identification:** The gateway must pass `end_user_id` (from JWT or API key `KeyContext`) when recording events. Events without `end_user_id` are attributed to "Unidentified".
+- **Aggregation Source:** Per-end-user aggregation comes from `GET /v1/customers/{customer_id}/users/usage` (Go phase-4), which reads ClickHouse `events.usage_events_dedup_v`. The BFF issues no aggregation SQL of its own — its only queries are display-name lookups against `customer.end_users` and `catalog.meters`.
+- **BFF auth (ADR-001 §2.2):** NestJS validates the Keycloak JWT, derives the actor's `org_id`/`customer_id`/`end_user_id` scope, and calls phase-4 with service-to-service auth carrying that scope.
+- **Cost Calculation:** Cost is the per-event `cost` field aggregated by phase-4; Est. Cost re-rates tokens via the ADR-001 §3.3 rate waterfall for display.
 - **Cached Tokens:** Cached tokens typically have a lower (or zero) rate since they represent reused computation.
-- **Aggregation Query:** Team usage aggregation: `SELECT end_user_id, SUM(input_tokens), SUM(output_tokens), SUM(cached_tokens), COUNT(*), SUM(cost) FROM usage_events WHERE org_id = ? AND event_timestamp BETWEEN ? AND ? GROUP BY end_user_id`.
-- **Index Performance:** Ensure index on `(org_id, event_timestamp)` for efficient aggregation. Also index on `end_user_id` for per-user queries.
-- **Rollup Strategy:** For historical data (older than 7 days), consider pre-aggregating into hourly or daily rollup tables to speed up queries.
-- **CUSTOMER Restriction:** The per-user endpoint must check `actor.role !== CUSTOMER` before returning `end_user_id`-level data. For CUSTOMER, return only aggregate totals.
+- **CSV Export:** The export is generated in the BFF (or client) from the phase-4 API response for the current filter state — there is no direct database export path.
+- **CUSTOMER Restriction:** The per-end-user endpoint must check `actor.role !== CUSTOMER` before returning `end_user_id`-level data. For CUSTOMER, return only customer-scoped aggregate totals.
 - **END_USER Guard:** The `/end-users/:endUserId/events` endpoint must verify that `actor.end_user_id === endUserId` OR `actor.role === ORG_ADMIN/SUPER_ADMIN`.
-- **Real-time Updates:** Team usage dashboard polls every 30 seconds for new data. Consider WebSocket push for real-time updates.
+- **Real-time Updates:** Team usage dashboard polls every 30 seconds for new data. Consider WebSocket push (Redis Pub/Sub `updates:{org_id}`) for real-time updates.
 - **Audit logging:** Team usage views are read-only — no audit logs written for view operations.
 
 ---
@@ -488,8 +504,8 @@ Team Usage is a read-only aggregation view. No webhooks are triggered by viewing
 - Budget alerts per end user
 - Usage quotas per end user
 - Anomaly detection per end user (usage spike alerts)
-- Comparative analysis (this user vs. average)
+- Comparative analysis (this end user vs. average)
 - Export to PDF report
 - Real-time streaming events (WebSocket)
-- Drill-down from team → user → event → request details
+- Drill-down from team → end user → event → request details
 - Cohort analysis for end users

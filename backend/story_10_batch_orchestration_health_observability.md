@@ -1,5 +1,7 @@
 # Story 10 — Batch Orchestration, Health & Observability
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 1 — Analytics Worker
 > **Depends on:** Story 8 (Kafka Consumer & Event Deserialization), Story 9 (ClickHouse Batch Writer & Deduplication)
 > **Blocks:** Nothing (completes Phase 1)

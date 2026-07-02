@@ -1,5 +1,7 @@
 # QuantumBilling User Story: Product — manage the product catalogue for an org
 
+> Aligned with ADR-001 (2026-07-01).
+
 ---
 
 ## Story ID & Sprint
@@ -30,7 +32,7 @@ Based on `catalog.products` — `id, org_id, product_code, product_name, descrip
 > **As an ORG_ADMIN**, I want to manage the product catalogue (digital or physical products, add-ons, and bundles) that customers can purchase or subscribe to, so that QuantumBilling can generate invoices that reference real product names and SKUs rather than raw meter readings.
 
 Key capabilities:
-- ORG_ADMIN can create products: `product_name`, `product_code` (SKU — auto-generated or custom), `description`, `product_type` (STANDALONE | ADD_ON | BUNDLE), `billing_model`, `status`, `is_public`
+- ORG_ADMIN can create products: `product_name`, `product_code` (SKU — auto-generated or custom), `description`, `product_type` (STANDALONE | ADD_ON | BUNDLE), `billing_model` (SUBSCRIPTION | USAGE_BASED | ONE_TIME | HYBRID — hybrid subscription + usage billing per ADR-001 §3), `status`, `is_public`
 - Products are scoped per `org_id`
 - Products can be linked to `catalog.plans` and `catalog.charges` via `catalog.product_features` (many-to-many via join table)
 - Products with `status = ACTIVE` and `is_public = true` are exposed via public catalogue endpoint for self-service checkout
@@ -51,7 +53,7 @@ Key capabilities:
 
 ## Acceptance Criteria
 
-1. ORG_ADMIN can create a product with: `product_name`, `product_code` (SKU — auto-generated or custom), `description`, `product_type` (STANDALONE | ADD_ON | BUNDLE), `billing_model`, `is_public` (default false), and optional `metadata` (JSONB).
+1. ORG_ADMIN can create a product with: `product_name`, `product_code` (SKU — auto-generated or custom), `description`, `product_type` (STANDALONE | ADD_ON | BUNDLE), `billing_model` (SUBSCRIPTION | USAGE_BASED | ONE_TIME | HYBRID), `is_public` (default false), and optional `metadata` (JSONB).
 2. Product SKUs (`product_code`) must be unique per org. Attempting to create or update a `product_code` that already exists for the same org returns `409 SKU_ALREADY_EXISTS`.
 3. STANDALONE products represent main subscription items; ADD_ONs can be attached to any subscription; BUNDLEs contain multiple child products (via `catalog.product_features` or a dedicated bundle join).
 4. Products can be linked to one or more `catalog.plans` via `catalog.product_features`. A product must have at least one linked plan before it can be published (ACTIVE).
@@ -227,9 +229,9 @@ Based on `catalog.products` — `id, org_id, product_code, product_name, descrip
 | `catalog.products` | INSERT · SELECT · UPDATE · DELETE (soft) | id, org_id, product_code, product_name, description, product_type, billing_model, status, metadata, is_public, created_at, updated_at |
 | `catalog.product_features` | INSERT · SELECT · DELETE | id, product_id, feature_id |
 | `catalog.features` | SELECT | id, org_id, name, category, status |
-| `catalog.plans` | SELECT | id, product_id, name, slug, billing_period, base_amount, currency, is_active |
+| `catalog.plans` | SELECT | id, product_id, name, slug, billing_period, base_amount, currency, is_active — plan columns are `base_amount`/`is_active`, not `base_price`/`status` (ERD.md conflict C-5) |
 | `catalog.charges` | SELECT | id, plan_id, meter_id, charge_type, charge_model, billing_model |
-| `customer.subscriptions` | SELECT | id, org_id, product_id, status (ACTIVE/ENDED/CANCELLED) |
+| `customer.subscriptions` | SELECT | id, org_id, customer_id, plan_id, status — product reached via `plan_id → catalog.plans.product_id` (ERD.md C-12 dropped `product_id` from subscriptions) |
 | `billing.invoice_line_items` | SELECT | id, product_id, invoice_id |
 | `identity.organizations` | SELECT | id, name |
 | `audit_logs` | INSERT | id, actor_id, action, target_id, org_id, metadata, created_at |
@@ -306,7 +308,7 @@ Accessible via "Add Product" button or clicking a product row. Fields:
 - **Product name** — text input, required, max 255 chars
 - **SKU / Product code** — text input; optional "Auto-generate" button (generates `PRODUCT_CODE_PREFIX` + random suffix); editable after creation only when status = DRAFT
 - **Product type** — select: STANDALONE / ADD_ON / BUNDLE
-- **Billing model** — select: SUBSCRIPTION / USAGE_BASED / ONE_TIME
+- **Billing model** — select: SUBSCRIPTION / USAGE_BASED / ONE_TIME / HYBRID
 - **Description** — textarea, optional, max 1000 chars
 - **Public / Private toggle** — controls `is_public`; public products appear in self-service catalogue
 - **Metadata** — JSONB editor (optional), for custom attributes
@@ -336,8 +338,8 @@ Grid layout of all products where `status = ACTIVE` AND `is_public = true` for t
 
 ## Dependencies & Notes for Agent
 
-- **Schema alignment:** Uses `catalog.products` with columns `product_code` (SKU), `product_name`, `product_type`, `billing_model`, `status`, `is_public`, `metadata` (JSONB) — exactly as shown in the ERD. Not `name`/`sku` but `product_name`/`product_code`.
-- **Prisma model:** `Product` with enum `ProductType { STANDALONE ADD_ON BUNDLE }` and enum `ProductStatus { DRAFT ACTIVE INACTIVE ARCHIVED }`. `ProductFeature` join table linking products to `catalog.features`.
+- **Schema alignment:** Uses `catalog.products` with columns `product_code` (SKU), `product_name`, `product_type`, `billing_model`, `status`, `is_public`, `metadata` (JSONB) — exactly as specified in ERD.md §3. Not `name`/`sku` but `product_name`/`product_code` (unique per `(org_id, product_code)`). Linked plans use `base_amount`/`is_active` (ERD.md conflict C-5).
+- **Prisma model:** `Product` with enum `ProductType { STANDALONE ADD_ON BUNDLE }`, enum `BillingModel { SUBSCRIPTION USAGE_BASED ONE_TIME HYBRID }`, and enum `ProductStatus { DRAFT ACTIVE INACTIVE ARCHIVED }`. `ProductFeature` join table linking products to `catalog.features`.
 - **Unique constraint:** `(org_id, product_code)` on `catalog.products` — enforce at DB level, catch Prisma `UniqueConstraintError` and map to `SKU_ALREADY_EXISTS`.
 - **State machine logic** lives in `ProductStateMachine` service class; guard transitions with explicit checks before calling `prisma.product.update`.
 - **Auto-generated SKU:** use `nanoid` or `crypto.randomUUID` with `PRODUCT_CODE_PREFIX`; store as `PRODUCT_CODE_PREFIX + shortId`.

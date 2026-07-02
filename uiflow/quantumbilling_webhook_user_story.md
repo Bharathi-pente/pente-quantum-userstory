@@ -1,5 +1,7 @@
 # QuantumBilling User Story: Webhooks — configure endpoints, subscribe to events, and receive real-time notifications
 
+> Aligned with ADR-001 (2026-07-01).
+
 ---
 
 ## Story ID & Sprint
@@ -192,8 +194,8 @@ Key capabilities:
 
 **Given:** webhook has 50 delivery log entries
 **When:** GET `/api/v1/webhooks/:webhookId/deliveries?page=2&limit=10`
-**Then:** 200 returned, 10 log entries (items 11-20), includes `totalCount=50`, `hasNextPage=true`
-**And:** each entry includes `eventId`, `eventType`, `responseStatus`, `attemptNumber`, `deliveredAt`
+**Then:** 200 returned, 10 log entries (items 11-20), includes `total_count=50`, `has_next_page=true`
+**And:** each entry includes `event_id`, `event_type`, `response_status`, `attempt_number`, `delivered_at`
 
 ---
 
@@ -220,7 +222,7 @@ Create a new webhook for the authenticated org.
 
 - **Auth:** JWT · Guard: `OrgAdminGuard`
 - **Body:** `{name, url, events[], metadata?}`
-- **Response:** 201 `{webhookId, name, url, events, status: "ACTIVE", metadata, createdAt}`
+- **Response:** 201 `{webhookId, name, url, events, status: "ACTIVE", metadata, created_at}`
 - **Secret response:** `secret` is returned once in the creation response only
 - **Errors:** 422 `WEBHOOK_HTTP_NOT_ALLOWED`, 422 `WEBHOOK_INVALID_EVENT_TYPE`, 422 `WEBHOOK_URL_UNREACHABLE`
 
@@ -231,7 +233,7 @@ List all webhooks for the org (or all orgs for SUPER_ADMIN).
 
 - **Auth:** JWT · Guard: `AuthenticatedGuard`
 - **Query:** `?status=ACTIVE&page=1&limit=20`
-- **Response:** 200 `{items: [...], totalCount, page, limit, hasNextPage}` — items do not include `secret`
+- **Response:** 200 `{items: [...], total_count, page, limit, has_next_page}` — items do not include `secret`
 
 ---
 
@@ -239,7 +241,7 @@ List all webhooks for the org (or all orgs for SUPER_ADMIN).
 Get full details of a single webhook (secret is never returned).
 
 - **Auth:** JWT · Guard: `OrgMemberGuard`
-- **Response:** 200 `{webhookId, name, url, events, status, metadata, createdAt, updatedAt}`
+- **Response:** 200 `{webhookId, name, url, events, status, metadata, created_at, updatedAt}`
 - **Errors:** 404 `WEBHOOK_NOT_FOUND`
 
 ---
@@ -277,7 +279,7 @@ List delivery log entries for a webhook with pagination.
 
 - **Auth:** JWT · Guard: `OrgAdminGuard`
 - **Query:** `?page=1&limit=20&status=FAILED`
-- **Response:** 200 `{items: [{eventId, eventType, responseStatus, attemptNumber, errorMessage, createdAt, deliveredAt}], totalCount, page, limit, hasNextPage}`
+- **Response:** 200 `{items: [{event_id, event_type, response_status, attempt_number, error_message, created_at, delivered_at}], total_count, page, limit, has_next_page}`
 
 ---
 
@@ -286,7 +288,7 @@ Send a test event to the webhook endpoint to verify connectivity and signature v
 
 - **Auth:** JWT · Guard: `OrgAdminGuard`
 - **Body:** `{event_type?: "test.event"}` (optional, defaults to `test.event`)
-- **Response:** 200 `{success: true, responseStatus: 200, responseTimeMs: 145}`
+- **Response:** 200 `{success: true, response_status: 200, responseTimeMs: 145}`
 - **Errors:** 404 `WEBHOOK_NOT_FOUND`, 422 `WEBHOOK_DELIVERY_FAILED` (if endpoint does not return 2xx)
 
 ---
@@ -322,7 +324,7 @@ signature = "sha256=" + HMAC-SHA256(webhook_secret, signature_payload)
 
 | Response | Action |
 |----------|--------|
-| 2xx | Mark `DELIVERED`, record `responseStatus`, `deliveredAt` |
+| 2xx | Mark `DELIVERED`, record `response_status`, `delivered_at` |
 | 4xx | Mark `FAILED` with reason `CLIENT_ERROR`, no retry |
 | 5xx | Mark `RETRYING`, schedule retry with backoff |
 | Timeout | Mark `RETRYING`, schedule retry with backoff |
@@ -342,7 +344,7 @@ signature = "sha256=" + HMAC-SHA256(webhook_secret, signature_payload)
 | 9 | 8 hours |
 | 10 | 24 hours (final) |
 
-**Critical events** (`payment.received`, `payment.failed`): up to 20 attempts over 72 hours.
+**Critical events** (`payment.received`, `payment.failed`, `wallet.topup_failed`, `invoice.finalized`): up to 20 attempts over 72 hours.
 
 ---
 
@@ -357,7 +359,7 @@ Based on `developer.webhooks`, `developer.webhook_deliveries`, `developer.webhoo
 | `developer.webhook_retry_schedules` | INSERT · SELECT · UPDATE · DELETE | `id, webhook_id, event_id, attempt_number, scheduled_at, status` |
 | `identity.organizations` | SELECT | `id, name, status` |
 | `identity.users` | SELECT | `id, org_id, role_id` |
-| `audit_logs` | INSERT | `id, org_id, actor_id, action, resource_type, resource_id, metadata, created_at` |
+| `platform.audit_logs` | INSERT | `id, org_id, user_id, action, resource_type, resource_id, created_at` |
 
 ---
 
@@ -369,12 +371,15 @@ All event types that can be subscribed to in a webhook's `events` array:
 |----------|-------------|
 | **Customer** | `customer.created`, `customer.updated`, `customer.churned`, `customer.health_declined` |
 | **Subscription** | `subscription.created`, `subscription.updated`, `subscription.cancelled`, `subscription.renewed`, `subscription.trial_ending` |
-| **Invoice** | `invoice.created`, `invoice.paid`, `invoice.void`, `invoice.overdue`, `invoice.dunning_started` |
+| **Invoice** | `invoice.created`, `invoice.finalized` (draft → pending at grace-window close — ADR-001 §3.1), `invoice.paid`, `invoice.void`, `invoice.overdue`, `invoice.dunning_started` |
 | **Payment** | `payment.received`, `payment.failed`, `payment.refunded`, `payment.pending` |
 | **Usage** | `usage.threshold_warning`, `usage.threshold_exceeded` |
+| **Wallet (CR-2)** | `wallet.low_balance`, `wallet.topup_succeeded`, `wallet.topup_failed` |
 | **Account** | `account.login`, `account.logout`, `account.api_key_created`, `account.api_key_revoked`, `account.password_changed` |
 | **Catalog** | `catalog.product.created`, `catalog.product.updated`, `catalog.rate_card.activated` |
 | **Credit** | `credit.granted`, `credit.consumed`, `credit.expired`, `credit.balance_low` |
+| **Credit Note (CR-4)** | `credit_note.issued` |
+| **Re-rating (CR-1)** | `rerating.completed` |
 | **System** | `test.event` (used for connectivity testing only) |
 
 ---
@@ -427,7 +432,7 @@ Accessible from **Settings › Webhooks**. Displays a card per webhook showing: 
 Fields:
 - **Name** (text input, required) — display name for the webhook
 - **URL** (text input, required) — must be HTTPS; shows validation error if HTTP
-- **Events** (multi-select checklist) — grouped by category (Customer, Subscription, Invoice, Payment, Usage, Account, Catalog, Credit); at least one must be selected
+- **Events** (multi-select checklist) — grouped by category (Customer, Subscription, Invoice, Payment, Usage, Wallet, Account, Catalog, Credit, Credit Note, Re-rating); at least one must be selected
 - **Metadata** (JSON textarea, optional) — arbitrary key-value metadata
 
 CTA: "Create webhook" / "Save changes". On success: if creation, toast shows the secret with a "Copy" button and a warning "This secret will only be shown once." Modal closes, list refreshes.
@@ -462,7 +467,8 @@ Full delivery history with filters: date range, event type, status (delivered, f
 - **Signature verification:** Webhook secrets are hashed with bcrypt before storage. Compute the signature using the raw secret value. The secret returned on creation/rotation is the raw value — it is never stored or retrievable again.
 - **Delivery idempotency:** Use `event_id` (the idempotency key in the payload) to deduplicate on the receiving side. QuantumBilling may deliver the same event multiple times.
 - **Prisma model:** `Webhook` with enum `WebhookStatus { ACTIVE INACTIVE }`; `WebhookDelivery` with enum `DeliveryStatus { PENDING DELIVERED FAILED RETRYING }`.
-- **Audit logging:** All create/update/delete/rotate-secret operations must be written to `audit_logs` with `resource_type = 'webhook'`.
+- **Audit logging:** All create/update/delete/rotate-secret operations must be written to `platform.audit_logs` (C-7) with `resource_type = 'webhook'`.
+- **Billing-worker event sources (ADR-001):** `invoice.finalized` fires when the Go billing worker transitions an invoice `draft → pending` at the end of the grace window (§3.1); `credit_note.issued` fires on credit-note issuance (CR-4); `rerating.completed` fires when a `billing.rerating_runs` row completes (CR-1); `wallet.low_balance` / `wallet.topup_succeeded` / `wallet.topup_failed` fire from the CR-2 wallet path (threshold crossing and auto top-up outcomes). These originate in the Go billing worker and are relayed through the same delivery pipeline.
 - **Webhook workers:** Delivery is handled by background workers consuming from a durable queue (RabbitMQ/SQS). Workers are stateless and horizontally scalable.
 - **HTTPS enforcement:** Validate HTTPS in the application layer (guard), not just in the database constraint. Reject `http://` URLs with 422.
 - **URL reachability check:** On create/update, optionally perform a HEAD request to the URL to verify it is reachable. Return 422 `WEBHOOK_URL_UNREACHABLE` if it fails. This is a soft check — it does not block delivery.

@@ -1,5 +1,7 @@
 # Story 3 — Cache Synchronization & Key Management Daemon
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 0 — Core Event Ingestion Pipeline
 > **Depends on:** Story 1 (domain types), Story 2 (auth provider details)
 > **Blocks:** Story 4 (single event ingest), Story 5 (batch event ingest)
@@ -8,7 +10,7 @@
 
 ## Description
 
-As a **platform operator**, I need a background cache synchronization daemon (or write-through caching logic) that populates Redis with API keys, organizations, and user membership records stored in PostgreSQL. This daemon ensures that the Ingest API's hot-path Redis validation remains populated with active keys, and that any administrative actions (key creation, revocation, or expiration) in PostgreSQL are immediately reflected in the cache.
+As a **platform operator**, I need a background cache synchronization daemon (or write-through caching logic) that populates Redis with API keys, organizations, and end-user membership records sourced from the control plane's canonical PostgreSQL tables (`identity.organizations`, `customer.customers`, `customer.end_users`) — the engine keeps no local duplicates of these tables. This daemon ensures that the Ingest API's hot-path Redis validation remains populated with active keys, and that any administrative actions (key creation, revocation, or expiration) in the control plane's PostgreSQL are immediately reflected in the cache.
 
 ---
 
@@ -18,8 +20,8 @@ As a **platform operator**, I need a background cache synchronization daemon (or
 
 | # | Criterion |
 |---|---|
-| 1 | On application startup, query all active API keys, active organizations, and user memberships from PostgreSQL. |
-| 2 | Populate Redis cache with warming data: `apikey:{key_value}` (JSON context, using the raw API key string as the lookup key — matching Story 2's auth middleware lookup), `org:{org_id}` (existence flag), and `org:{org_id}:user:{user_id}` (membership flag). |
+| 1 | On application startup, query all active API keys, active organizations, and end-user memberships from the control plane's canonical PostgreSQL tables (`identity.organizations`, `customer.customers`, `customer.end_users`). |
+| 2 | Populate Redis cache with warming data: `apikey:{key_value}` (JSON context, using the raw API key string as the lookup key — matching Story 2's auth middleware lookup), `org:{org_id}` (existence flag), and `org:{org_id}:enduser:{end_user_id}` (membership flag). |
 | 3 | Cache warming must be non-blocking (run in a background goroutine) and log the count of loaded records. |
 
 ### Real-Time Key Synchronization
@@ -34,7 +36,7 @@ As a **platform operator**, I need a background cache synchronization daemon (or
 
 | # | Criterion |
 |---|---|
-| 7 | Organization existence flags `org:{org_id}` and user memberships `org:{org_id}:user:{user_id}` are set with a cache TTL of 1 hour (`3600` seconds) to allow natural drift recovery. |
+| 7 | Organization existence flags `org:{org_id}` and end-user memberships `org:{org_id}:enduser:{end_user_id}` are set with a cache TTL of 1 hour (`3600` seconds) to allow natural drift recovery. |
 | 8 | API key contexts `apikey:{key_value}` are stored with no TTL (persistent) and evicted only via explicit revocation/expiration. |
 
 ---
@@ -47,7 +49,7 @@ As a **platform operator**, I need a background cache synchronization daemon (or
 | TC-02 | Start sync worker with existing database records | Cache is pre-populated with all database keys and active orgs |
 | TC-03 | Revoke key in Postgres, trigger sync | Redis key `apikey:{key_value}` is deleted or status changed to revoked |
 | TC-04 | Key expires in Postgres | Redis key evicted or updated to `expired` status |
-| TC-05 | Add new user-org membership | Redis cache gets `org:{org_id}:user:{user_id}` flag set with 1-hour TTL |
+| TC-05 | Add new end-user–org membership | Redis cache gets `org:{org_id}:enduser:{end_user_id}` flag set with 1-hour TTL |
 
 ---
 
@@ -57,9 +59,10 @@ As a **platform operator**, I need a background cache synchronization daemon (or
 |---|---|---|
 | `apikey:{key_value}` (Redis) | `SET`, `DEL` | Key contexts stored in cache (raw key, matching Story 2) |
 | `org:{org_id}` (Redis) | `SETEX` | Warm organization existence cache (TTL 1h) |
-| `org:{org_id}:user:{user_id}` (Redis) | `SETEX` | Warm user membership cache (TTL 1h) |
-| `organizations` (Postgres) | `SELECT` | Read active organizations at startup |
-| `users` (Postgres) | `SELECT` | Read active users at startup |
+| `org:{org_id}:enduser:{end_user_id}` (Redis) | `SETEX` | Warm end-user membership cache (TTL 1h) |
+| `identity.organizations` (control-plane Postgres) | `SELECT` | Read active organizations at startup (canonical table) |
+| `customer.customers` (control-plane Postgres) | `SELECT` | Read active customers at startup (canonical table) |
+| `customer.end_users` (control-plane Postgres) | `SELECT` | Read active end users at startup (canonical table) |
 | `api_keys` (Postgres) | `SELECT` | Read active API keys at startup |
 
 ---

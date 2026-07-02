@@ -1,5 +1,7 @@
 # Story 2 — Redis-Backed API Key Auth Provider
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 0 — Core Event Ingestion Pipeline
 > **Depends on:** Story 1 (`KeyContext` struct, `KeyStatus` and `SourceMode` constants)
 > **Blocks:** Stories 3, 4
@@ -22,8 +24,8 @@ The auth system must support three key types (direct ingest, virtual key, BYOK) 
 |---|---|
 | 1 | API keys are stored in Redis under key pattern `apikey:{key_value}` |
 | 2 | The value is JSON matching the `KeyContext` struct from Story 1 |
-| 3 | Example: `SET apikey:sk_test_abc123 '{"key_id":"key_abc","org_id":"org_acme","tenant_id":"tenant_acme","source_mode":"direct_ingest","status":"active"}'` |
-| 4 | Plain-string format supported: if the Redis value is NOT valid JSON (i.e. a plain string), treat it as the `org_id` with `source_mode=direct_ingest`, `tenant_id=""`, `status=active` |
+| 3 | Example: `SET apikey:sk_test_abc123 '{"key_id":"key_abc","org_id":"org_acme","customer_id":"cust_acme","source_mode":"direct_ingest","status":"active"}'` |
+| 4 | Plain-string format supported: if the Redis value is NOT valid JSON (i.e. a plain string), treat it as the `org_id` with `source_mode=direct_ingest`, `customer_id=""`, `status=active` |
 
 ### `ValidateAPIKey` Function
 
@@ -36,7 +38,7 @@ The auth system must support three key types (direct ingest, virtual key, BYOK) 
 | 9 | If `KeyContext.Status == "revoked"` → return `ErrKeyRevoked` |
 | 10 | If `KeyContext.Status == "expired"` → return `ErrKeyExpired` |
 | 11 | If `KeyContext.Status == "active"` → return the `KeyContext` |
-| 12 | If Redis value is a plain string (not JSON) → construct `KeyContext` with that string as `OrgID`, `SourceMode=direct_ingest`, `Status=active`, empty `KeyID` and `TenantID` |
+| 12 | If Redis value is a plain string (not JSON) → construct `KeyContext` with that string as `OrgID`, `SourceMode=direct_ingest`, `Status=active`, empty `KeyID` and `CustomerID` |
 | 13 | Function must have a timeout: if Redis does not respond within `2s`, return `ErrAuthServiceUnavailable` |
 
 ### Error Types

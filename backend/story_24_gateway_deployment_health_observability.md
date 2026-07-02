@@ -1,5 +1,7 @@
 # Story 24 — Gateway Deployment, Health & Observability
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 5 — LiteLLM Gateway Integration
 > **Depends on:** Stories 20, 21, 22, 23 (all integration code must exist)
 > **Blocks:** Nothing (completes Phase 5)

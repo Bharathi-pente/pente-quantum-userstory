@@ -1,5 +1,7 @@
 # QuantumBilling User Story: AI Chatbot — Multi-Role Billing Assistant
 
+> Aligned with ADR-001 (2026-07-01).
+
 **QB-STORY-035** · Sprint 9 · Phase: Intelligence
 
 ---
@@ -27,7 +29,7 @@ The QuantumBill AI Chatbot is a **role-aware conversational assistant** that und
 ### Key Design Principles
 
 1. **Role-Aware**: The chatbot only shows/answers data the user has permission to see (RBAC-enforced)
-2. **Live Data**: Answers are generated from real database queries, not static knowledge
+2. **Live Data**: Answers are generated from real queries against the platform's canonical data sources, not static knowledge — usage/cost via the Go phase-4 analytics APIs (ClickHouse-backed, proxied through the NestJS BFF with the user's resolved scope); billing/catalog via the canonical Postgres tables
 3. **Contextual**: The chatbot knows which page the user is on and can infer context
 4. **Conversational**: Supports follow-up questions within a session
 5. **Transparent**: Shows source data/queries when asked ("how did you calculate this?")
@@ -55,19 +57,29 @@ User Question
 │  1. Receive question + user context       │
 │  2. Classify intent (NLU engine)          │
 │  3. Identify required data entities       │
-│  4. Query database via parameterized SQL  │
+│  4. Fetch data:                           │
+│     · usage/cost → Go phase-4 analytics   │
+│       APIs via the NestJS BFF, carrying   │
+│       the user's resolved scope           │
+│     · billing/catalog → parameterized SQL │
+│       over canonical Postgres tables      │
 │  5. Format results as context for LLM     │
 │  6. Call LLM (GPT-4 / Claude) with        │
 │     system prompt + context + question    │
 │  7. Return streaming response             │
 └────────────────┬─────────────────────────┘
                  │
-                 ▼
-    ┌─────────────────────┐
-    │  PostgreSQL Database │
-    │  (live query layer)  │
-    └─────────────────────┘
+        ┌────────┴──────────────┐
+        ▼                       ▼
+┌───────────────────┐  ┌──────────────────────────┐
+│ NestJS BFF →       │  │ Canonical PostgreSQL      │
+│ Go phase-4         │  │ billing.* customer.*      │
+│ analytics APIs     │  │ catalog.* analytics.*     │
+│ (ClickHouse-backed)│  │ (control plane + billing) │
+└───────────────────┘  └──────────────────────────┘
 ```
+
+**Data sources (ADR-001):** raw usage events live only in ClickHouse, behind the Go phase-4 analytics APIs — the chatbot answers all usage/cost questions by calling those APIs through the NestJS BFF with the user's org/customer/end-user scope. Billing and catalog questions are answered from the canonical Postgres tables (`billing.invoices`, `billing.credits`, `billing.wallets`, `customer.subscriptions`, `catalog.*`). AI recommendations live in `analytics.ai_recommendations` (conflict C-8).
 
 ---
 
@@ -88,46 +100,46 @@ User Question
 
 | Intent | Example Question | Data Sources |
 |--------|-----------------|--------------|
-| `platform_summary` | "How's the platform doing?" | Platform analytics, active orgs, total MRR, uptime |
+| `platform_summary` | "How's the platform doing?" | Go phase-4 analytics APIs (SUPER_ADMIN scope), `analytics.revenue_insights`, health endpoints |
 | `org_lookup` | "Show me Acme Corp's account" | `identity.organizations`, subscriptions, invoices |
 | `org_list` | "Which orgs have overdue invoices?" | `identity.organizations` JOIN `billing.invoices` |
-| `platform_revenue` | "What's our total MRR?" | Aggregated subscriptions |
+| `platform_revenue` | "What's our total MRR?" | `analytics.revenue_insights` (MRR is derived — conflict C-22) |
 | `system_health` | "Are there any service issues?" | Health endpoints, recent errors |
 | `audit_search` | "Show me recent security events" | `audit.security_audit_logs` |
-| `ai_recommendations` | "What recommendations are open?" | `billing.ai_recommendations` |
+| `ai_recommendations` | "What recommendations are open?" | `analytics.ai_recommendations` |
 | `customer_search` | "Find customer Alpha Industries" | `customer.customers` |
 
 ### ORG_ADMIN Intents
 
 | Intent | Example Question | Data Sources |
 |--------|-----------------|--------------|
-| `usage_summary` | "How many tokens did we use this month?" | `usage.raw_events`, `metering.usage_snapshots` |
-| `usage_by_model` | "Which model is most used?" | `usage.raw_events` GROUP BY model |
-| `usage_by_customer` | "Which customer uses the most tokens?" | `usage.raw_events` GROUP BY customer_id |
-| `cost_summary` | "What's my total cost this billing period?" | `usage.raw_events` (cost), `billing.invoices` |
-| `cost_by_customer` | "Which customer costs the most?" | `usage.raw_events` GROUP BY customer_id |
+| `usage_summary` | "How many tokens did we use this month?" | Go phase-4 org usage-summary API (via BFF, org scope) |
+| `usage_by_model` | "Which model is most used?" | Go phase-4 model-breakdown API (via BFF) |
+| `usage_by_customer` | "Which customer uses the most tokens?" | Go phase-4 per-customer usage API (via BFF) |
+| `cost_summary` | "What's my total cost this billing period?" | Go phase-4 cost-summary API (via BFF), `billing.invoices` |
+| `cost_by_customer` | "Which customer costs the most?" | Go phase-4 per-customer cost API (via BFF) |
 | `invoice_status` | "Any overdue invoices?" | `billing.invoices` WHERE status = 'overdue' |
 | `invoice_detail` | "Show me invoice INV-2026-01-001" | `billing.invoices`, `billing.invoice_line_items` |
 | `subscription_info` | "What plan are we on?" | `customer.subscriptions` JOIN `catalog.plans` |
 | `subscription_list` | "List all active subscriptions" | `customer.subscriptions` WHERE status = 'active' |
-| `credit_balance` | "How many credits do we have left?" | `billing.credits` |
+| `credit_balance` | "How many credits do we have left?" | `billing.credits`, `billing.wallets` (CR-2 prepaid balance) |
 | `credit_expiry` | "When do our credits expire?" | `billing.credits` WHERE expires_at |
 | `contract_info` | "What's our contract commitment?" | `customer.contracts` |
 | `customer_count` | "How many customers do we have?" | `customer.customers` |
 | `customer_detail` | "Show me details for Gamma Tech" | `customer.customers`, subscriptions, invoices |
 | `end_user_count` | "How many active end users?" | `customer.end_users` WHERE status = 'active' |
-| `end_user_usage` | "Who is the top end user by tokens?" | `usage.raw_events` GROUP BY end_user_id |
+| `end_user_usage` | "Who is the top end user by tokens?" | Go phase-4 user-usage API (via BFF) |
 | `meter_status` | "Are all meters active?" | `catalog.meters` WHERE status |
 | `pricing_info` | "What's our GPT-4 rate?" | `catalog.rate_card_rates`, `catalog.pricing_models` |
 | `product_info` | "What products do we offer?" | `catalog.products` |
 | `plan_info` | "What plans are available?" | `catalog.plans` |
 | `dunning_status` | "Any invoices in dunning?" | `billing.dunning_communications`, `billing.invoices` |
 | `payment_history` | "Show recent payments" | `billing.payments` |
-| `team_usage` | "Show team usage breakdown" | `customer.end_users` JOIN `usage.raw_events` |
-| `budget_status` | "Are we within budget?" | Limits vs current usage |
-| `recommendations` | "Any AI recommendations?" | `billing.ai_recommendations` |
-| `savings_opportunity` | "How can I reduce costs?" | Usage patterns analysis |
-| `forecast` | "What will my next bill be?" | Current usage extrapolation |
+| `team_usage` | "Show team usage breakdown" | Go phase-4 user-usage APIs (via BFF); `customer.end_users` for names |
+| `budget_status` | "Are we within budget?" | `customer.usage_limits` vs phase-4 usage summary |
+| `recommendations` | "Any AI recommendations?" | `analytics.ai_recommendations` |
+| `savings_opportunity` | "How can I reduce costs?" | Usage-pattern analysis over phase-4 aggregates |
+| `forecast` | "What will my next bill be?" | Extrapolation of phase-4 usage trend × rates |
 
 ### CUSTOMER Intents
 
@@ -136,8 +148,8 @@ User Question
 | `my_invoices` | "Show my invoices" | `billing.invoices` WHERE customer_id = own |
 | `my_balance` | "What do I owe?" | `billing.invoices` WHERE status = 'pending'/'overdue' |
 | `pay_invoice` | "Can I pay invoice INV-001?" | Trigger payment (action intent) |
-| `my_credits` | "How many credits left?" | `billing.credits` WHERE customer_id = own |
-| `my_usage` | "How many tokens did we use?" | `usage.raw_events` WHERE customer_id = own |
+| `my_credits` | "How many credits left?" | `billing.credits`, `billing.wallets` WHERE customer_id = own |
+| `my_usage` | "How many tokens did we use?" | Go phase-4 customer usage-summary API (via BFF, customer scope) |
 | `my_plan` | "What plan am I on?" | `customer.subscriptions` JOIN `catalog.plans` |
 | `my_contract` | "Show my contract details" | `customer.contracts` WHERE customer_id = own |
 | `my_limits` | "What are my usage limits?" | `customer.usage_limits` |
@@ -147,13 +159,13 @@ User Question
 
 | Intent | Example Question | Data Sources |
 |--------|-----------------|--------------|
-| `my_token_usage` | "How many tokens did I use today?" | `usage.raw_events` WHERE end_user_id = own |
-| `my_cost` | "How much did I cost this month?" | `usage.raw_events` WHERE end_user_id = own |
-| `my_events` | "Show my recent API calls" | `usage.raw_events` WHERE end_user_id = own |
+| `my_token_usage` | "How many tokens did I use today?" | Go phase-4 user usage-summary API (via BFF, end-user scope) |
+| `my_cost` | "How much did I cost this month?" | Go phase-4 user usage-summary API (via BFF, end-user scope) |
+| `my_events` | "Show my recent API calls" | Go phase-4 user activity API (via BFF, end-user scope) |
 | `my_api_keys` | "How many API keys do I have?" | `developer.api_keys` WHERE end_user_id = own |
-| `my_models` | "Which models did I use?" | `usage.raw_events` GROUP BY model WHERE end_user_id = own |
-| `my_latency` | "What's my average latency?" | `usage.raw_events` AVG(latency) WHERE end_user_id = own |
-| `my_errors` | "Any failed requests?" | `usage.raw_events` WHERE status = 'failed' AND end_user_id = own |
+| `my_models` | "Which models did I use?" | Go phase-4 user model-breakdown API (via BFF, end-user scope) |
+| `my_latency` | "What's my average latency?" | Go phase-4 user activity API (latency aggregate, end-user scope) |
+| `my_errors` | "Any failed requests?" | Go phase-4 user activity API filtered `status = error` (end-user scope) |
 
 ---
 
@@ -164,9 +176,9 @@ User: "How many tokens did we use this month?"
   │
   ├── Backend classifies intent: usage_summary
   ├── Identifies role: ORG_ADMIN
-  ├── Queries: SELECT SUM(total_tokens) FROM usage.raw_events 
-  │           WHERE org_id = 'org_1' 
-  │           AND timestamp >= date_trunc('month', CURRENT_DATE)
+  ├── Calls (via NestJS BFF, org scope):
+  │     GET /analytics/orgs/{org_id}/usage/summary?period=current_month
+  │     (Go phase-4 API over ClickHouse usage_events_dedup_v)
   ├── Result: 45,234,567 tokens
   │
   └── LLM generates: "Your organization used **45.2M tokens** this month.
@@ -181,10 +193,9 @@ User: "Break it down by model"
   │
   ├── Follow-up intent: usage_by_model
   ├── Same session, same org context
-  ├── Queries: SELECT model, SUM(total_tokens) FROM usage.raw_events
-  │           WHERE org_id = 'org_1' 
-  │           AND timestamp >= date_trunc('month', CURRENT_DATE)
-  │           GROUP BY model ORDER BY SUM DESC
+  ├── Calls (via NestJS BFF, org scope):
+  │     GET /analytics/orgs/{org_id}/usage/by-model?period=current_month
+  │     (Go phase-4 model-breakdown API)
   │
   └── LLM generates: "Here's your breakdown by model:
                       • **GPT-4**: 22.1M tokens (48.9%) — $884
@@ -222,7 +233,7 @@ User: "Break it down by model"
 
 ### Data Accuracy
 
-15. All numeric answers are derived from live database queries — no hardcoded responses.
+15. All numeric answers are derived from live data-source queries (Go phase-4 analytics APIs for usage; canonical Postgres for billing/catalog) — no hardcoded responses.
 16. Token counts, costs, and dates are correctly formatted with appropriate units.
 17. Currency values use the organization's configured currency.
 18. Time-based queries respect the organization's configured timezone.
@@ -253,7 +264,7 @@ User: "Break it down by model"
 
 **Given:** User has SUPER_ADMIN role
 **When:** User asks "How many organizations are active?"
-**Then:** Chatbot queries `SELECT COUNT(*) FROM identity.organizations WHERE status = 'active'`
+**Then:** Chatbot queries `SELECT COUNT(*) FROM identity.organizations WHERE status = 'ACTIVE'`
 **And:** Returns the count with natural-language formatting
 
 ---
@@ -262,7 +273,7 @@ User: "Break it down by model"
 
 **Given:** User has ORG_ADMIN role for org "Acme AI Corp"
 **When:** User asks "How many tokens did we use this month?"
-**Then:** Chatbot queries `SELECT SUM(total_tokens) FROM usage.raw_events WHERE org_id = 'org_1' AND timestamp >= date_trunc('month', CURRENT_DATE)`
+**Then:** Chatbot calls the Go phase-4 org usage-summary API via the NestJS BFF (`GET /analytics/orgs/org_1/usage/summary?period=current_month`), scoped to the user's org
 **And:** Returns formatted result: "Your organization used **45.2M tokens** this month."
 
 ---
@@ -280,7 +291,7 @@ User: "Break it down by model"
 
 **Given:** User has END_USER role (end_user_id = 'eu_1')
 **When:** User asks "How many API calls did I make today?"
-**Then:** Chatbot queries `SELECT COUNT(*) FROM usage.raw_events WHERE end_user_id = 'eu_1' AND timestamp >= CURRENT_DATE`
+**Then:** Chatbot calls the Go phase-4 user activity API via the NestJS BFF (`GET /analytics/end-users/eu_1/activity?period=today`), scoped to that end user
 **And:** Returns the count specific to that end user
 
 ---
@@ -299,7 +310,7 @@ User: "Break it down by model"
 **Given:** User just asked about total tokens and received an answer
 **When:** User follows up with "Break it down by model"
 **Then:** Chatbot recognizes the session context (org_id, previous intent was usage_summary)
-**And:** Queries `SELECT model, SUM(total_tokens) FROM ... GROUP BY model`
+**And:** Calls the Go phase-4 model-breakdown API with the same period and org scope
 **And:** Returns a model-by-model breakdown
 
 ---
@@ -316,7 +327,7 @@ User: "Break it down by model"
 
 **Given:** ORG_ADMIN for Acme AI Corp
 **When:** User asks "What plan are we on?"
-**Then:** Chatbot queries `SELECT p.name, s.status, s.mrr, s.start_date, s.next_billing_date FROM customer.subscriptions s JOIN catalog.plans p ON s.plan_id = p.id WHERE s.org_id = 'org_1' AND s.status = 'active'`
+**Then:** Chatbot queries `SELECT p.name, s.status, p.base_amount, s.start_date, s.current_period_end FROM customer.subscriptions s JOIN catalog.plans p ON s.plan_id = p.id WHERE s.org_id = 'org_1' AND s.status = 'active'`
 **And:** Returns: "You're on the **Enterprise Monthly** plan ($499/mo). Status: **Active** since Jan 20, 2024. Next billing: Feb 1, 2025."
 
 ---
@@ -363,7 +374,7 @@ Send a chat message and receive a streaming response.
 data: {"type": "token", "content": "Your"}
 data: {"type": "token", "content": " organization"}
 data: {"type": "token", "content": " used"}
-data: {"type": "done", "sources": ["usage.raw_events"], "latency_ms": 1450}
+data: {"type": "done", "sources": ["go-analytics:org_usage_summary"], "latency_ms": 1450}
 ```
 
 - **Errors:** 401 (unauthorized), 429 (rate limited), 500 (LLM failure)
@@ -431,7 +442,8 @@ services/ai-chatbot/
 ├── app/
 │   ├── router.py              # POST /api/v1/ai/chat
 │   ├── intent_classifier.py   # NLU intent recognition
-│   ├── query_builder.py       # Role-safe SQL generation
+│   ├── analytics_client.py    # Go phase-4 API client (via NestJS BFF, scoped)
+│   ├── query_builder.py       # Role-safe SQL over canonical Postgres (billing/catalog)
 │   ├── context_manager.py     # Session state + history
 │   ├── llm_service.py         # LLM call + response streaming
 │   ├── formatter.py           # Response formatting
@@ -441,8 +453,7 @@ services/ai-chatbot/
 │   ├── system_org_admin.md
 │   ├── system_customer.md
 │   └── system_end_user.md
-└── queries/
-    ├── usage.sql
+└── queries/                   # canonical Postgres only — usage comes from the phase-4 APIs
     ├── invoices.sql
     ├── subscriptions.sql
     └── credits.sql
@@ -468,7 +479,7 @@ You can answer questions about:
 - Customers: count, details, usage
 - End Users: count, roles, usage
 
-You ALWAYS query the live database for answers.
+You ALWAYS query the live data sources for answers (phase-4 analytics APIs for usage; canonical Postgres for billing/catalog).
 You NEVER make up numbers.
 You format currency in the org's configured currency.
 You respect per-user RBAC — never show data the user shouldn't see.
@@ -502,12 +513,13 @@ User: "How many end users do we have?"
   → Response: "Your organization has 8 end users across 3 customers."
 
 User: "Who is our top customer by revenue?"
-  → SQL: SELECT c.name, SUM(s.mrr) as total_mrr
+  → SQL: SELECT c.name, SUM(p.base_amount) as monthly_base
          FROM customer.customers c
          JOIN customer.subscriptions s ON c.id = s.customer_id
+         JOIN catalog.plans p ON s.plan_id = p.id
          WHERE c.org_id = 'org_1' AND s.status = 'active'
-         GROUP BY c.id ORDER BY total_mrr DESC LIMIT 1
-  → Response: "Your top customer is **Gamma Tech** with $499/mo MRR."
+         GROUP BY c.id ORDER BY monthly_base DESC LIMIT 1
+  → Response: "Your top customer is **Gamma Tech** at $499/mo base fee."
 ```
 
 ### CUSTOMER
@@ -522,9 +534,8 @@ User: "When is my next invoice due?"
 ### END_USER
 ```
 User: "Did any of my API calls fail today?"
-  → SQL: SELECT COUNT(*) FROM usage.raw_events
-         WHERE end_user_id = 'eu_1' AND status = 'failed'
-         AND timestamp >= CURRENT_DATE
+  → API: GET /analytics/end-users/eu_1/activity?period=today&status=error
+         (Go phase-4 API via NestJS BFF, end-user scope)
   → Response: "You had **0 failed API calls** today. All 1,250 requests were successful."
 ```
 

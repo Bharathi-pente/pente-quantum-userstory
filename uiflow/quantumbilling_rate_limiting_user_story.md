@@ -1,5 +1,7 @@
 # QuantumBilling User Story: Rate Limiting
 
+> Aligned with ADR-001 (2026-07-01).
+
 ---
 
 ## Story ID & Metadata
@@ -31,15 +33,15 @@ The flow is: ORG_ADMIN creates a rate limit policy scoped to a product → adds 
 **Key capabilities:**
 - Rate limit policies are scoped to a product (via `product_id` FK to `catalog.products.id`)
 - Each policy has one or more rules: an endpoint pattern (e.g., `/api/v1/chat/*`), a `requests_limit`, a `time_window` (`MINUTE` | `HOUR` | `DAY`), and an optional `burst_limit`
-- `rate_limit_usage` tracks per API key: `current_usage`, `window_start`, `window_end` — used by the API gateway middleware to check limits
+- **Enforcement counters live in Redis** (the engine hot path, per ADR-001 §2 — sub-5ms checks); Postgres `developer.rate_limit_usage` (`current_usage`, `window_start`, `window_end`) is the **asynchronously synced audit trail** for reporting and the usage dashboard — it is never consulted on the request path
 - ORG_ADMIN creates/patches/deletes policies and rules
 - SUPER_ADMIN can manage policies for any org
-- When a request comes in: API gateway middleware looks up the `rate_limit_rule` matching the endpoint, reads `rate_limit_usage` for the API key, checks if `current_usage >= requests_limit`
+- When a request comes in: API gateway middleware looks up the `rate_limit_rule` matching the endpoint, reads the **Redis counter** for the API key, checks if `current_usage >= requests_limit`
 - If limit exceeded: return `429 Too Many Requests` with `Retry-After` header
 - If `burst_limit` is set: allow short bursts above `requests_limit` before enforcing the limit (token bucket or sliding window)
 - `budget_limit_usd` on the API key: separate financial cap per key (returns `402` if exceeded)
-- `rate_limit_usage` is updated atomically on each request (use Redis INCR with TTL for high performance, with DB sync async)
-- Status of policies/rules: `ACTIVE` | `INACTIVE`
+- Counters are updated atomically on each request via Redis INCR with TTL; a background job syncs Redis → Postgres `rate_limit_usage` (audit trail)
+- Policy/rule status enum: `DRAFT` | `ACTIVE` | `INACTIVE` (per ERD — no other values)
 - State machine: `DRAFT` → `ACTIVE` → `INACTIVE` (soft-disable)
 - All rate limit hits are logged for analytics and billing
 
@@ -62,7 +64,7 @@ The flow is: ORG_ADMIN creates a rate limit policy scoped to a product → adds 
 
 2. ORG_ADMIN can add one or more `rate_limit_rules` to a policy. Each rule has `endpoint` (pattern string), `requests_limit` (integer), `time_window` (`MINUTE` | `HOUR` | `DAY`), and optional `burst_limit`.
 
-3. API gateway middleware resolves the matching `rate_limit_rule` by endpoint pattern, reads `rate_limit_usage` for the incoming API key (`developer.api_keys.id`), and compares `current_usage` against `requests_limit`.
+3. API gateway middleware resolves the matching `rate_limit_rule` by endpoint pattern, reads the **Redis enforcement counter** for the incoming API key (`developer.api_keys.id` — canonical schema `developer`, C-3), and compares `current_usage` against `requests_limit`. Postgres `rate_limit_usage` is not read on the hot path.
 
 4. If `current_usage >= requests_limit` and no burst capacity remains, the gateway returns `429 Too Many Requests` with `Retry-After` header (seconds until window resets).
 
@@ -74,9 +76,9 @@ The flow is: ORG_ADMIN creates a rate limit policy scoped to a product → adds 
 
 8. SUPER_ADMIN can create, update, view, and delete policies and rules for any org (bypasses org ownership check).
 
-9. `rate_limit_usage` is updated atomically per request using Redis INCR with TTL matching the `time_window`. A background job syncs Redis counters to the DB table asynchronously.
+9. Enforcement counters are updated atomically per request using Redis INCR with TTL matching the `time_window`. A background job syncs Redis counters to Postgres `developer.rate_limit_usage` asynchronously — the DB table is the audit trail, not the enforcement store.
 
-10. All rate limit exceeded events are written to `audit.security_audit_logs` with `actor_id` (API key owner), `action = RATE_LIMIT_EXCEEDED`, `policy_id`, `rule_id`, `current_usage`, `requests_limit`, and timestamp.
+10. All rate limit exceeded events are written to `audit.security_audit_logs` with `violation_type = 'rate_limit'` (ERD §6), `api_key_id`, and `details` carrying `{policy_id, rule_id, current_usage, requests_limit, endpoint}`, plus timestamp.
 
 ---
 
@@ -266,11 +268,11 @@ Reset usage counters for an API key (admin operation).
 |-------|--------|-----------|-------------|
 | `rate_limit_policies` | `developer` | INSERT · SELECT · UPDATE · DELETE (soft) | `id`, `product_id`, `name`, `status` |
 | `rate_limit_rules` | `developer` | INSERT · SELECT · UPDATE · DELETE | `id`, `policy_id`, `endpoint`, `requests_limit`, `time_window`, `burst_limit` |
-| `rate_limit_usage` | `developer` | SELECT · UPDATE | `id`, `api_key_id`, `org_id`, `current_usage`, `window_start`, `window_end` |
-| `api_keys` | `developer` | SELECT | `id`, `org_id`, `key_prefix`, `key_hash`, `budget_limit_usd`, `status` |
+| `rate_limit_usage` | `developer` | SELECT · UPDATE (async sync job only) | `id`, `api_key_id`, `org_id`, `current_usage`, `window_start`, `window_end` — audit trail; enforcement counters are Redis |
+| `api_keys` | `developer` | SELECT | `id`, `org_id`, `customer_id`, `key_prefix`, `key_hash`, `budget_limit_usd`, `status` — canonical schema `developer` (C-3) |
 | `products` | `catalog` | SELECT | `id`, `org_id`, `product_name`, `product_code` |
 | `organizations` | `identity` | SELECT | `id`, `name` |
-| `audit.security_audit_logs` | `audit` | INSERT | `id`, `actor_id`, `action`, `target_id`, `metadata`, `created_at` |
+| `audit.security_audit_logs` | `audit` | INSERT | `id`, `org_id`, `api_key_id`, `customer_id`, `violation_type`, `ip_address`, `details`, `triggered_by`, `created_at` |
 
 ### Table Schemas (Source of Truth)
 
@@ -298,9 +300,11 @@ Reset usage counters for an API key (admin operation).
 | `id` | UUID | PK |
 | `api_key_id` | UUID | FK → `developer.api_keys.id` |
 | `org_id` | UUID | FK → `identity.organizations.id` |
-| `current_usage` | INTEGER | Requests made in current window |
+| `current_usage` | INTEGER | Requests made in current window (synced from Redis; audit trail only) |
 | `window_start` | TIMESTAMP | Start of the current rate limit window |
 | `window_end` | TIMESTAMP | End of the current rate limit window |
+
+> Enforcement is Redis-only on the hot path (ADR-001 §2); this table is the persisted audit trail, written by the async sync job.
 
 ---
 
@@ -308,7 +312,7 @@ Reset usage counters for an API key (admin operation).
 
 ### Policy Lifecycle
 
-**Note:** `rate_limit_policy_status` enum values in postgres (after migration): `active`, `inactive`, `archived`, `draft`
+**Note:** `rate_limit_policy_status` enum is `DRAFT | ACTIVE | INACTIVE` — the single consistent set (per ERD §5); no `archived` value.
 
 ```
 DRAFT → ACTIVE → INACTIVE
@@ -327,7 +331,7 @@ DRAFT → ACTIVE → INACTIVE
 ```
 Request arrives
   → Middleware resolves endpoint pattern to rate_limit_rule
-  → Read rate_limit_usage for api_key_id
+  → Read Redis counter for api_key_id (hot path — Postgres never consulted)
   → IF current_usage >= requests_limit (and burst exhausted):
       → 429 Too Many Requests + Retry-After
   → ELSE IF budget_limit_usd exceeded:
@@ -335,6 +339,8 @@ Request arrives
   → ELSE:
       → Increment Redis counter (TTL = time_window)
       → Pass request to downstream service
+
+(Async, off the request path: sync job persists Redis counters to developer.rate_limit_usage — the audit trail)
 ```
 
 ---
@@ -442,14 +448,14 @@ Header: `Retry-After: 45`
 
 ## Dependencies & Notes for Agent
 
-- **Redis atomic counters:** Use `INCR` + `EXPIRE` (TTL = seconds in window) for `rate_limit_usage` updates. Fall back to DB row-level locking if Redis is unavailable. Key format: `rl:{api_key_id}:{rule_id}:{window_epoch}`.
+- **Redis atomic counters:** Use `INCR` + `EXPIRE` (TTL = seconds in window). Redis is the sole enforcement store on the hot path (ADR-001 §2); if Redis is unavailable, apply the configured fail-open/fail-closed policy — never fall back to Postgres row locking on the request path. Key format: `rl:{api_key_id}:{rule_id}:{window_epoch}`.
 - **Sliding window vs. fixed window:** Implement sliding window log or token bucket for `burst_limit` accuracy. Fixed window is acceptable for baseline `requests_limit` enforcement.
 - **Gateway middleware integration:** The rate limit check runs as middleware BEFORE the request hits the controller. Middleware resolves the rule from an in-memory LRU cache (refreshed every 60s from DB) to avoid per-request DB hits.
-- **DB sync job:** A cron job (every 5 minutes) reconciles Redis counters with `rate_limit_usage` DB records. On startup, the service seeds Redis from DB for any keys not yet tracked.
+- **DB sync job:** A cron job (every 5 minutes) persists Redis counters into `developer.rate_limit_usage` — Redis is authoritative for the live window; the DB rows are the audit trail powering the usage dashboard. On startup, the service may seed Redis from DB for windows still open.
 - **Prisma models:**
   - `RateLimitPolicy` with enum `PolicyStatus { DRAFT ACTIVE INACTIVE }`
   - `RateLimitRule` with enum `TimeWindow { MINUTE HOUR DAY }`
   - `RateLimitUsage`
-- **Audit logging:** All `RATE_LIMIT_EXCEEDED` events must be logged to `audit.security_audit_logs` with `action = 'RATE_LIMIT_EXCEEDED'`, `target_id = api_key_id`, `metadata = { policy_id, rule_id, current_usage, requests_limit, endpoint }`.
+- **Audit logging:** All rate-limit-exceeded events must be logged to `audit.security_audit_logs` with `violation_type = 'rate_limit'` (ERD §6 enum), `api_key_id`, and `details = { policy_id, rule_id, current_usage, requests_limit, endpoint }`.
 - **SUPER_ADMIN bypass:** Guard must check `actor.role === 'SUPER_ADMIN'` FIRST before org ownership check for all policy and rule endpoints.
 - **Cache invalidation:** When a policy or rule is created/updated/deleted, publish an invalidation event to Redis pub/sub so gateway instances refresh their LRU cache immediately.

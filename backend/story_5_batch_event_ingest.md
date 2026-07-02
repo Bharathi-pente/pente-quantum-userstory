@@ -1,7 +1,9 @@
 # Story 5 — Batch Event Ingest (`POST /v1/events/batch`)
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 0 — Core Event Ingestion Pipeline
-> **Depends on:** Story 1 (domain types), Story 2 (auth middleware), Story 3 (cache synchronization), Story 4 (single event patterns — Kafka writer, Redis idempotency, org/user cache)
+> **Depends on:** Story 1 (domain types), Story 2 (auth middleware), Story 3 (cache synchronization), Story 4 (single event patterns — Kafka writer, Redis idempotency, org/end-user cache)
 > **Blocks:** Nothing (this is the last ingest-specific story. Story 6 can be developed in parallel.)
 
 ---
@@ -65,21 +67,21 @@ The batch endpoint must support two payload shapes: a wrapped object `{"events":
 | 23 | Orgs not in Postgres → mark all events for that org as failed with code `UNKNOWN_ORG` |
 | 24 | This batch PostgreSQL query replaces N individual queries — critical for performance |
 
-### Batch User Lookup
+### Batch End-User Lookup
 
 | # | Criterion |
 |---|---|
-| 25 | Collect all unique `(org_id, user_id)` pairs from remaining events |
-| 26 | For each unique pair, check Redis `org:{org_id}:user:{user_id}` |
-| 27 | For cache misses, issue a single PostgreSQL query using `UNNEST` to query composite keys dynamically: `SELECT id, org_id FROM users WHERE (org_id, id) IN (SELECT * FROM UNNEST($1::text[], $2::text[]))` |
-| 28 | PostgreSQL results → backfill Redis for each found user (TTL 1h) |
-| 29 | Users not in Postgres → mark events as failed with code `USER_NOT_IN_ORG` |
+| 25 | Collect all unique `(org_id, end_user_id)` pairs from remaining events |
+| 26 | For each unique pair, check Redis `org:{org_id}:enduser:{end_user_id}` |
+| 27 | For cache misses, issue a single PostgreSQL query using `UNNEST` to query composite keys dynamically: `SELECT id, org_id FROM end_users WHERE (org_id, id) IN (SELECT * FROM UNNEST($1::text[], $2::text[]))` |
+| 28 | PostgreSQL results → backfill Redis for each found end user (TTL 1h) |
+| 29 | End users not in Postgres → mark events as failed with code `USER_NOT_IN_ORG` |
 
 ### Filter & Publish
 
 | # | Criterion |
 |---|---|
-| 30 | Build final list of valid events (passed dedup + org check + user check) |
+| 30 | Build final list of valid events (passed dedup + org check + end-user check) |
 | 31 | If zero valid events → `400 BAD_REQUEST`, code `NO_VALID_EVENTS` |
 | 32 | If 1+ valid events → serialize all to JSON and publish via a single Kafka producer `WriteMessages` call (batch publish) |
 | 33 | Partition key per message = `event.OrgID` |
@@ -92,7 +94,7 @@ The batch endpoint must support two payload shapes: a wrapped object `{"events":
 |---|---|
 | 36 | `202 ACCEPTED` with `{"accepted":true,"accepted_count":N,"failed_count":M,"message":"batch processed"}` |
 | 37 | `N` = number of events successfully published to Kafka |
-| 38 | `M` = number of events filtered out (duplicates + unknown org + user not in org) |
+| 38 | `M` = number of events filtered out (duplicates + unknown org + end user not in org) |
 | 39 | Response time must be logged with `latency_ms` |
 
 ### Logging
@@ -118,7 +120,7 @@ The batch endpoint must support two payload shapes: a wrapped object `{"events":
 | TC-08 | Bloom filter says "might be seen", SETNX confirms duplicate | Event correctly marked as duplicate |
 | TC-09 | Bloom filter says "definitely not seen" | Event skips SETNX, processed as new |
 | TC-10 | Batch org lookup: 3 unique orgs, 2 in Redis cache, 1 in Postgres | 1 Postgres query for the miss, 2 cache hits |
-| TC-11 | Batch user lookup: 5 unique user-org pairs, 3 in Redis, 2 in Postgres | 1 Postgres query for misses, cache backfilled |
+| TC-11 | Batch end-user lookup: 5 unique end-user–org pairs, 3 in Redis, 2 in Postgres | 1 Postgres query for misses, cache backfilled |
 | TC-12 | Virtual key: all `org_id` values overridden from key context | No spoofed orgs processed |
 | TC-13 | BYOK key: batch of 5, all enriched with `source_mode=byok` | All 5 published with correct `source_mode` |
 | TC-14 | Invalid JSON body | `400 INVALID_JSON` |
@@ -147,9 +149,9 @@ The batch endpoint must support two payload shapes: a wrapped object `{"events":
 | `bf:{org_id}:{shard}` | `BF.EXISTS`, `BF.ADD` | Sharded Bloom filter for batch dedup |
 | `idem:{org_id}:{event_id}` | `SETNX` + `EXPIRE` | Fallback dedup for Bloom filter "might exist" events |
 | `org:{org_id}` | `MGET` (Redis pipeline) + `SET` (backfill) | Batch org existence cache |
-| `org:{org_id}:user:{user_id}` | `MGET` (Redis pipeline) + `SET` (backfill) | Batch user-in-org cache |
+| `org:{org_id}:enduser:{end_user_id}` | `MGET` (Redis pipeline) + `SET` (backfill) | Batch end-user-in-org cache |
 | `organizations` (Postgres) | `SELECT ... WHERE id = ANY($1)` | Source of truth for org existence |
-| `users` (Postgres) | `SELECT ... WHERE (org_id, id) IN (...)` | Source of truth for user membership |
+| `end_users` (Postgres) | `SELECT ... WHERE (org_id, id) IN (...)` | Source of truth for end-user membership |
 | `usage-events` (Kafka) | `WriteMessages` (batch) | All valid events published in one call |
 
 ---
@@ -188,8 +190,8 @@ The batch endpoint must support two payload shapes: a wrapped object `{"events":
 ## Dependencies & Notes for Agent
 
 - **Bloom filter library:** Use `github.com/redis/go-redis/v9` with Redis Stack's `BF.ADD` / `BF.EXISTS` commands. If Redis Stack is not available, fall back to a Go in-process Bloom filter (e.g. `github.com/bits-and-blooms/bloom`) — but Redis Stack Bloom is preferred for persistence across restarts.
-- **Redis pipelining:** Use `rdb.Pipeline()` for batch `MGET` operations on org and user cache lookups. Do not issue individual `GET` commands in a loop.
-- **PostgreSQL batch queries:** Use `pgx`'s batch query support or construct a single parameterized query with `ANY($1)` for the org lookup. For user lookup, use a VALUES clause or `unnest` with composite types.
+- **Redis pipelining:** Use `rdb.Pipeline()` for batch `MGET` operations on org and end-user cache lookups. Do not issue individual `GET` commands in a loop.
+- **PostgreSQL batch queries:** Use `pgx`'s batch query support or construct a single parameterized query with `ANY($1)` for the org lookup. For end-user lookup, use a VALUES clause or `unnest` with composite types.
 - **Handler placement:** Place in `internal/api/handler.go` alongside the single-event handler from Story 4, or in a separate `internal/api/handler_batch.go`.
 - **Payload detection:** Use `json.RawMessage` to peek at the first non-whitespace character of the body. If `{`, try wrapped. If `[`, try bare array. This avoids double-decoding the entire payload.
 - **Bloom filter rotation:** No rotation mechanism needed in this story — if a shard fills up, the false positive rate increases gradually. A separate maintenance story can add periodic `BF.RESERVE` rotation.

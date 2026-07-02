@@ -1,5 +1,7 @@
 # Story 17 — Time-Series Trends
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 4 — Aggregation & Analytics Reporting APIs
 > **Depends on:** Phase 4 Overview (ClickHouse `usage_events_dedup_v` view must exist from Phase 1)
 > **Blocks:** Nothing (can be developed in parallel with other Phase 4 stories)
@@ -8,7 +10,7 @@
 
 ## Description
 
-As a **platform administrator or organization manager**, I need to view usage metrics bucketed over chronological intervals (hourly, daily, weekly, monthly) so that I can analyze growth trends, detect peak usage windows, and prepare scaling capacities.
+As a **Platform Administrator or Org Manager**, I need to view usage metrics bucketed over chronological intervals (hourly, daily, weekly, monthly) so that I can analyze growth trends, detect peak usage windows, and prepare scaling capacities.
 
 This story implements four aggregate trend endpoints:
 *   `GET /v1/analytics/hourly`: Hourly buckets (usually for short-term analysis like the last 24–48 hours).
@@ -24,7 +26,7 @@ This story implements four aggregate trend endpoints:
 
 | # | Criterion | Details / Edge Cases |
 |---|---|---|
-| 1 | All endpoints accept optional query parameters: `org_id` and `tenant_id` to scope trend data. | If requested by an org admin, `org_id` filter is strictly enforced. |
+| 1 | All endpoints accept optional query parameters: `org_id` and `customer_id` to scope trend data. | If requested by an Org Manager, the `org_id` filter is strictly enforced. Scope arrives via the NestJS BFF's trusted headers (service-to-service auth per Phase 4 Overview → Authentication). |
 | 2 | Exposes optional date parameters: `start_date` and `end_date` (format: `YYYY-MM-DD`). | Malformed dates return `400 BAD_REQUEST` with code `INVALID_DATE_FORMAT`. |
 | 3 | Date range validation checks: `start_date` must be before or equal to `end_date`. | Invalid ranges return `400` with code `INVALID_DATE_RANGE`. |
 | 4 | Bound query ranges to prevent memory exhaustion: `hourly` is limited to a maximum range of 7 days; `daily` is limited to 90 days; `weekly`/`monthly` are unlimited. | Over-bounds ranges return `400` with code `QUERY_RANGE_TOO_LARGE`. |
@@ -79,10 +81,10 @@ This story implements four aggregate trend endpoints:
 * **When**: Calling `GET /v1/analytics/hourly?org_id=org_acme&start_date=2026-06-01&end_date=2026-06-15` (14 days range requested)
 * **Then**: Returns `400 BAD_REQUEST` with error code `QUERY_RANGE_TOO_LARGE`.
 
-### TC-04: Filter Trends by Tenant
-* **Given**: ClickHouse contains events for multiple tenants under `org_acme`.
-* **When**: Calling `GET /v1/analytics/daily?org_id=org_acme&tenant_id=tenant_1`
-* **Then**: Returns `200 OK` containing trend logs filtered specifically to `tenant_1` events.
+### TC-04: Filter Trends by Customer
+* **Given**: ClickHouse contains events for multiple customers under `org_acme`.
+* **When**: Calling `GET /v1/analytics/daily?org_id=org_acme&customer_id=customer_1`
+* **Then**: Returns `200 OK` containing trend logs filtered specifically to `customer_1` events.
 
 ### TC-05: Hourly Trend Timezone Alignment
 * **When**: Querying hourly trends.

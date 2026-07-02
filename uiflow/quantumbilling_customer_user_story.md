@@ -1,5 +1,7 @@
 # QuantumBilling User Story: Customer — manage customer accounts within an organisation
 
+> Aligned with ADR-001 (2026-07-01).
+
 **QB-STORY-006** · Sprint 2 · Phase: Feature
 
 ---
@@ -23,7 +25,7 @@ Customer — manage customer accounts within an organisation
 
 As an **ORG_ADMIN**, I want to create and manage customer accounts for my organisation so that I can track their subscriptions, usage, credit balance, and health scores, and ultimately bill them correctly.
 
-Each customer belongs to one organisation (`org_id`) and optionally to one product (`product_id`). A customer has a `credit_balance` (numeric, adjustable up or down), a `health_score` (integer 0-100, auto-calculated or manually set), and a `status` (`ACTIVE | SUSPENDED | CHURNED`).
+Each customer belongs to one organisation (`org_id`) and optionally to one product (`product_id`). A customer has a `credit_balance` (numeric, adjustable up or down; for display, the prepaid balance sources from the `billing.wallets` wallet — ADR-001 CR-2), a `health_score` (integer 0-100, auto-calculated or manually set), and a `status` (`ACTIVE | SUSPENDED | CHURNED` — canonical enum per ERD.md C-16).
 
 The flow is: ORG_ADMIN creates a customer → system provisions the account with default limits → ORG_ADMIN can adjust credits, update details, or change status → SUPER_ADMIN can manage customers for any org → CUSTOMER role can view their own account read-only.
 
@@ -53,7 +55,7 @@ State transitions: `ACTIVE → SUSPENDED → CHURNED` (terminal); `SUSPENDED →
 7. SUPER_ADMIN can perform all operations in items 1–6 for any `org_id`. Requests include `X-SUPER-ADMIN: true` header or equivalent guard.
 8. CUSTOMER role calling GET `/api/v1/customers/:customerId` for their own `customer_id` returns `200` with account details. Write operations return `403 FORBIDDEN`.
 9. END_USER role returns `403 FORBIDDEN` for all customer endpoints.
-10. All create, update, credit-adjust, and status-change operations are written to `audit_logs` with `actor_id`, `action`, `target_customer_id`, and `org_id`.
+10. All create, update, credit-adjust, and status-change operations are written to `platform.audit_logs` (C-7) with `user_id`, `action`, `resource_type`/`resource_id` (the customer), and `org_id`.
 
 ---
 
@@ -72,7 +74,7 @@ State transitions: `ACTIVE → SUSPENDED → CHURNED` (terminal); `SUSPENDED →
 
 - Given: 25 customers exist for `org_id = 1`
 - When: GET `/api/v1/customers?status=ACTIVE&product_id=10&page=2&limit=10`
-- Then: `200` returned with items 11–20, `totalCount = 25`, `hasNextPage = true`
+- Then: `200` returned with items 11–20, `total_count = 25`, `has_next_page = true`
 
 ---
 
@@ -190,12 +192,13 @@ State transitions: `ACTIVE → SUSPENDED → CHURNED` (terminal); `SUSPENDED →
 | `customers` | `customer` | INSERT · SELECT · UPDATE | `id, org_id, product_id, name, email, credit_balance, health_score, status` |
 | `subscriptions` | `customer` | SELECT | `id, org_id, customer_id, contract_id, product_id, start_date, end_date, status` |
 | `customer_contacts` | `customer` | INSERT · SELECT | `id, customer_id, email, designation, is_primary` |
-| `customer_limits` | `customer` | SELECT | `id, customer_id, api_calls_limit, input_tokens_limit, output_tokens_limit` |
-| `usage_summary` | `customer` | SELECT | `id, customer_id, end_user_id, meter_id, period_start, period_end, total_usage, total_cost` |
+| `usage_limits` | `customer` | SELECT | `id, org_id, product_id, meter_id, limit_type, limit_value, period` — the former `customer_limits` table is **merged into** `customer.usage_limits`; token-specific caps (API calls, input/output tokens) become meter-scoped rows (C-10) |
+| `usage_summary` | `customer` | SELECT | `id, customer_id, end_user_id, meter_id, period_start, period_end, total_usage, total_cost` — ClickHouse-fed materialized rollup, display only (ADR-001 §2 item 5) |
+| `wallets` | `billing` | SELECT | `id, customer_id, balance, currency, status` — prepaid source for the displayed credit balance (CR-2) |
 | `credit_ledger` | `customer` | INSERT | `id, customer_id, amount, balance_after, reason, created_at` |
 | `organizations` | `identity` | SELECT | `id, name, billing_email, currency` |
 | `products` | `catalog` | SELECT | `id, org_id, product_name, product_code, status` |
-| `audit_logs` | `shared` | INSERT | `id, actor_id, action, target_customer_id, org_id, metadata, created_at` |
+| `audit_logs` | `platform` | INSERT | `id, org_id, user_id, action, resource_type, resource_id, old_value, new_value, created_at` — canonical audit table per C-7 |
 
 ---
 
@@ -261,7 +264,7 @@ State transitions: `ACTIVE → SUSPENDED → CHURNED` (terminal); `SUSPENDED →
 
 **Credit adjustment modal** — triggered from row actions "Adjust Credits". Fields: Current Balance (read-only display), Amount (numeric input, signed integer, positive = add, negative = deduct), Reason (text input, required, max 255 chars). CTA: "Apply Adjustment". On success: toast "Credit balance updated to {new_balance}". On insufficient balance: inline error "Insufficient balance".
 
-**Customer detail page** — full-page view with header: customer name, status badge, email, linked product. Tabs: Overview, Subscriptions, Contacts, Usage, Credit History. Overview shows: Credit Balance, Health Score (gauge 0-100), Org, Created At, Updated At.
+**Customer detail page** — full-page view with header: customer name, status badge, email, linked product. Tabs: Overview, Subscriptions, Contacts, Usage, Credit History. Overview shows: Credit Balance (prepaid balance displayed from the customer's wallet, `billing.wallets` — CR-2), Health Score (gauge 0-100), Org, Created At, Updated At.
 
 **Contacts tab** — list of `customer_contacts` with: Email, Designation, Primary badge. "Add Contact" button. Contact row actions: Edit, Delete (soft delete).
 
@@ -279,10 +282,11 @@ State transitions: `ACTIVE → SUSPENDED → CHURNED` (terminal); `SUSPENDED →
 
 ## Dependencies & Notes for Agent
 
-- Prisma model: `Customer` with enum `CustomerStatus { ACTIVE SUSPENDED CHURNED }`. FK: `org_id → Organization`, `product_id → Product`.
+- Prisma model: `Customer` with enum `CustomerStatus { ACTIVE SUSPENDED CHURNED }` — the canonical status enum (ERD.md C-16). FK: `org_id → Organization`, `product_id → Product`.
 - Prisma model: `CreditLedger` — stores all credit adjustments. Columns: `id, customer_id, amount (Int), balance_after (Int), reason, created_at`.
 - Prisma model: `CustomerContact` — columns: `id, customer_id, email, designation, is_primary`.
-- Prisma model: `CustomerLimit` — columns: `id, customer_id, api_calls_limit, input_tokens_limit, output_tokens_limit`.
+- No separate `CustomerLimit` model: `customer.customer_limits` is **merged into** `customer.usage_limits` (C-10) — token-specific caps (API calls, input tokens, output tokens) are represented as meter-scoped `usage_limits` rows keyed by `meter_id`.
+- Credit balance display: the prepaid source is the customer's wallet (`billing.wallets`, CR-2); `customer.customers.credit_balance` and `credit_ledger` remain the ledgered record for manual adjustments.
 - Guard hierarchy: `SuperAdminGuard` (bypasses org check) → `OrgAdminGuard` (validates `actor.org_id === customer.org_id`) → `CustomerGuard` (validates `actor.customer_id === customer.id` for reads only).
 - Wrap customer creation + optional subscription provisioning in a DB transaction.
 - All write operations must be wrapped in a transaction with `audit_logs` insert.
@@ -290,4 +294,4 @@ State transitions: `ACTIVE → SUSPENDED → CHURNED` (terminal); `SUSPENDED →
 - `credit_ledger` insert is authoritative — `customer.credit_balance` is updated within the same transaction.
 - Pagination: use cursor-based or offset pagination with `page` and `limit` query params.
 - SUPER_ADMIN bypass: check `X-SUPER-ADMIN: true` header or `actor.role === SUPER_ADMIN` before OrgAdminGuard.
-- API response envelope: `{ "data": T, "meta": { "totalCount": number, "page": number, "limit": number, "hasNextPage": boolean } }` for lists.
+- API response envelope: `{ "data": T, "meta": { "total_count": number, "page": number, "limit": number, "has_next_page": boolean } }` for lists.

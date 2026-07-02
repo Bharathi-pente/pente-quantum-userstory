@@ -1,5 +1,7 @@
 # Phase 1 — Analytics Worker (Kafka → ClickHouse)
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Status:** Greenfield Specification | **Scope:** Build the analytics worker from an empty repository — the first downstream consumer of the Phase 0 ingest pipeline.
 >
 > This is the **Phase 1 blueprint**. The analytics worker consumes usage events from the `usage-events` Kafka topic and batch-inserts them into the `events.usage_events` ClickHouse table, making data available for dashboards, aggregation APIs, and billing. It completes the core data pipeline: **Ingest API → Kafka → Analytics Worker → ClickHouse**.
@@ -63,8 +65,8 @@ Ingest API → Kafka ────────────→ Analytics Worker �
 
 | # | Criterion |
 |---|---|
-| 19 | ClickHouse table uses `ReplacingMergeTree(ingested_at)` ordered by `(org_id, tenant_id, event_id)` |
-| 20 | A dedup view `usage_events_dedup_v` uses `argMax(... , ingested_at)` grouped by `(org_id, tenant_id, event_id)` |
+| 19 | ClickHouse table uses `ReplacingMergeTree(ingested_at)` ordered by `(org_id, customer_id, event_id)` |
+| 20 | A dedup view `usage_events_dedup_v` uses `argMax(... , ingested_at)` grouped by `(org_id, customer_id, event_id)` |
 | 21 | All analytics queries read from the dedup view, not the raw table |
 
 ### Cross-Cutting
@@ -145,9 +147,9 @@ Ingest API → Kafka ────────────→ Analytics Worker �
 
 | Table / Store | Operation | Key Columns |
 |---|---|---|
-| **Kafka** (`usage-events`) | `CONSUME` | Consumer group: `analytics-v1`, 32 partitions |
-| **ClickHouse** (`events.usage_events`) | `INSERT` (batch) | `ReplacingMergeTree(ingested_at)`, ordered by `(org_id, tenant_id, event_id)` |
-| **ClickHouse** (`events.usage_events_dedup_v`) | `SELECT` (by downstream APIs) | `argMax(...) GROUP BY (org_id, tenant_id, event_id)` |
+| **Kafka** (`usage-events`) | `CONSUME` | Consumer group: `analytics-v1`, 32 partitions (partition key stays `org_id`) |
+| **ClickHouse** (`events.usage_events`) | `INSERT` (batch) | `ReplacingMergeTree(ingested_at)`, ordered by `(org_id, customer_id, event_id)` |
+| **ClickHouse** (`events.usage_events_dedup_v`) | `SELECT` (by downstream APIs) | `argMax(...) GROUP BY (org_id, customer_id, event_id)` |
 
 ---
 

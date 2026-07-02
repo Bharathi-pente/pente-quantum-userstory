@@ -1,5 +1,7 @@
 # Story 6 — Database Migrations, Health Endpoints & Observability
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 0 — Core Event Ingestion Pipeline
 > **Depends on:** Story 1 (domain types — `source_mode`, `key_id` fields)
 > **Blocks:** Nothing (can be developed in parallel with Stories 4 and 5)
@@ -11,7 +13,7 @@
 
 As a **platform operator deploying the ingestion pipeline to production**, I need the database schemas created from scratch, HTTP health and readiness probes so my orchestrator (Kubernetes / Railway) can manage the service lifecycle, OpenTelemetry tracing across all ingest paths so I can debug latency issues, and structured logging so I can monitor the pipeline in production.
 
-This story delivers the cross-cutting concerns that make the ingest service observable, deployable, and schema-complete. The migrations create every table the pipeline needs. The health endpoints enable zero-downtime deployments. The tracing and logging enable debugging and alerting.
+This story delivers the cross-cutting concerns that make the ingest service observable, deployable, and schema-complete. The migrations create every engine-owned table the pipeline needs — the engine owns only `api_keys` (plus `schema_migrations`) in Postgres and the `events` database in ClickHouse; org/customer/end-user identity is canonical in the control plane (ADR-001 §2.1). The health endpoints enable zero-downtime deployments. The tracing and logging enable debugging and alerting.
 
 ---
 
@@ -21,21 +23,18 @@ This story delivers the cross-cutting concerns that make the ingest service obse
 
 | # | Criterion |
 |---|---|
-| 1 | Create migration file `migrations/postgres/001_create_organizations.sql` |
-| 2 | Creates `organizations` table: `id TEXT PRIMARY KEY`, `slug TEXT NOT NULL UNIQUE`, `name TEXT NOT NULL`, `status TEXT NOT NULL DEFAULT 'active'`, `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`, and `updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()` |
-| 3 | Creates `users` table: `id TEXT PRIMARY KEY`, `email TEXT NOT NULL`, `org_id TEXT NOT NULL REFERENCES organizations(id)`, `status TEXT NOT NULL DEFAULT 'active'`, `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()` |
-| 4 | Creates `idx_users_org_id` index on `users(org_id)` |
-| 5 | Creates `tenants` table: `id TEXT PRIMARY KEY`, `org_id TEXT NOT NULL REFERENCES organizations(id)`, `name TEXT NOT NULL`, `slug TEXT NOT NULL`, `status TEXT NOT NULL DEFAULT 'active'`, `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`, `updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`. UNIQUE constraint on `(org_id, slug)` |
-| 6 | Creates `api_keys` table: `id TEXT PRIMARY KEY`, `key_hash TEXT NOT NULL UNIQUE`, `org_id TEXT NOT NULL REFERENCES organizations(id)`, `tenant_id TEXT REFERENCES tenants(id)`, `source_mode TEXT NOT NULL DEFAULT 'direct_ingest'`, `status TEXT NOT NULL DEFAULT 'active'`, `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`, `expires_at TIMESTAMPTZ` (nullable) |
-| 7 | Creates `idx_api_keys_org_id` index on `api_keys(org_id)` |
-| 8 | Migration is idempotent: uses `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS` |
+| 1 | Create migration file `migrations/postgres/001_create_api_keys.sql` |
+| 2 | Does **not** create `organizations`, `users`, or `tenants` tables — the engine's duplicate identity DDL is dropped per ADR-001 §2.1. The engine validates org/customer/end-user existence against the control plane's canonical `identity.organizations` / `customer.customers` / `customer.end_users` tables via Redis existence caches (`org:{org_id}`, `org:{org_id}:enduser:{end_user_id}`), write-through-populated from control-plane Postgres |
+| 3 | Creates `api_keys` table: `id TEXT PRIMARY KEY`, `key_hash TEXT NOT NULL UNIQUE`, `org_id TEXT NOT NULL`, `customer_id TEXT`, `source_mode TEXT NOT NULL DEFAULT 'direct_ingest'`, `status TEXT NOT NULL DEFAULT 'active'`, `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`, `expires_at TIMESTAMPTZ` (nullable) — `org_id`/`customer_id` are logical references to `identity.organizations.id` / `customer.customers.id` (no local FKs; identity lives in the control plane) |
+| 4 | Creates `idx_api_keys_org_id` index on `api_keys(org_id)` |
+| 5 | Migration is idempotent: uses `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS` |
 
 ### ClickHouse Migration
 
 | # | Criterion |
 |---|---|
 | 9 | Create migration file `migrations/clickhouse/001_create_usage_events.sql` |
-| 10 | Creates `events.usage_events` table with `ReplacingMergeTree(ingested_at)` engine, partitioned by `toYYYYMM(ingested_at)`, ordered by `(org_id, tenant_id, event_id)` |
+| 10 | Creates `events.usage_events` table with `ReplacingMergeTree(ingested_at)` engine, partitioned by `toYYYYMM(ingested_at)`, ordered by `(org_id, customer_id, event_id)` — columns `customer_id`/`end_user_id` per ADR-001 §2.1 |
 | 11 | Table includes all `UsageEvent` fields as columns (including `unit` as `String`) plus `ingested_at DateTime DEFAULT now()` |
 | 12 | `session_id` column defined as `String DEFAULT ''` — top-level for query performance |
 | 13 | `source_mode` column defined as `String DEFAULT 'direct_ingest'` |
@@ -45,7 +44,7 @@ This story delivers the cross-cutting concerns that make the ingest service obse
 | 17 | `cost` column defined as `String DEFAULT '0'` (stored as String to prevent float truncation/precision drift in ingest path) |
 | 18 | `total_tokens` column defined as `Float64 DEFAULT 0` |
 | 19 | `metadata` column defined as `String DEFAULT ''` (stored as JSON string) |
-| 20 | Creates `events.usage_events_dedup_v` view using `argMax(column, ingested_at)` grouped by `(org_id, tenant_id, event_id)` — includes `session_id`, `source_mode`, `key_id`, `unit`, `cost`, `total_tokens`, and `thinking_tokens` in its projection |
+| 20 | Creates `events.usage_events_dedup_v` view using `argMax(column, ingested_at)` grouped by `(org_id, customer_id, event_id)` — includes `end_user_id`, `session_id`, `source_mode`, `key_id`, `unit`, `cost`, `total_tokens`, and `thinking_tokens` in its projection |
 | 21 | Migration is idempotent: uses `CREATE TABLE IF NOT EXISTS` and `CREATE OR REPLACE VIEW` |
 | 22 | Both migrations tested against a local PostgreSQL and ClickHouse instance before being marked complete |
 
@@ -122,8 +121,8 @@ This story delivers the cross-cutting concerns that make the ingest service obse
 | TC-03 | `GET /ready` with Kafka down | `503 {"status":"not_ready","checks":{"kafka":"error:...","redis":"ok","postgres":"ok"}}` |
 | TC-04 | `GET /ready` with Redis down | `503 {"status":"not_ready","checks":{"kafka":"ok","redis":"error:...","postgres":"ok"}}` |
 | TC-05 | `GET /ready` with Postgres down | `503 {"status":"not_ready","checks":{"kafka":"ok","redis":"ok","postgres":"error:..."}}` |
-| TC-06 | Migration `001` applied to empty Postgres | `organizations`, `users`, `tenants`, `api_keys` tables exist with correct columns |
-| TC-07 | Migration `001` applied to empty ClickHouse | `usage_events` table and `usage_events_dedup_v` view exist with `session_id`, `thinking_tokens`, `source_mode`, `key_id`, `unit` columns |
+| TC-06 | Migration `001` applied to empty Postgres | `api_keys` table exists with correct columns; no `organizations`/`users`/`tenants` tables created (ADR-001 §2.1) |
+| TC-07 | Migration `001` applied to empty ClickHouse | `usage_events` table and `usage_events_dedup_v` view exist with `customer_id`, `end_user_id`, `session_id`, `thinking_tokens`, `source_mode`, `key_id`, `unit` columns |
 | TC-08 | Postgres migration applied twice (idempotent) | No error on second run |
 | TC-09 | ClickHouse migration applied twice (idempotent) | No error on second run |
 | TC-10 | Trace spans created for single event ingest | All child spans visible in trace viewer |
@@ -153,10 +152,8 @@ These endpoints must be registered **before** the auth middleware in the middlew
 
 | Component | Operation | Purpose |
 |---|---|---|
-| PostgreSQL `organizations` | `CREATE TABLE` | New table — org identity and status |
-| PostgreSQL `users` | `CREATE TABLE` | New table — user identity and org membership |
-| PostgreSQL `tenants` | `CREATE TABLE` | New table — tenant identity per org |
-| PostgreSQL `api_keys` | `CREATE TABLE` | New table — API key metadata (source of truth) |
+| PostgreSQL `api_keys` | `CREATE TABLE` | New table — API key metadata (source of truth; sole engine-owned Postgres table besides `schema_migrations`) |
+| PostgreSQL `identity.organizations` / `customer.customers` / `customer.end_users` | — (not created here) | Control-plane canonical identity tables — the engine validates against them via Redis existence caches (ADR-001 §2.1) |
 | ClickHouse `events.usage_events` | `CREATE TABLE` | New table — all ingested events with ReplacingMergeTree |
 | ClickHouse `events.usage_events_dedup_v` | `CREATE VIEW` | New view — deduplicated events using FINAL |
 | Kafka | Metadata read | Readiness check |
@@ -198,3 +195,4 @@ These endpoints must be registered **before** the auth middleware in the middlew
 - **Logging correlation:** Include `trace_id` and `span_id` in every log line when available. Use `slog` with a custom handler or `slog.LogAttrs` to include these as attributes.
 - **Build info:** Use `go build -ldflags="-X main.Version=0.1.0"` to inject the service version at build time. Log it at startup.
 - **Migration safety:** All DDL uses `IF NOT EXISTS` / `IF EXISTS` clauses for idempotency. The `DEFAULT 'direct_ingest'` on `source_mode` ensures forward compatibility: if a future migration adds a column without a default, existing rows get a safe fallback value.
+- **No duplicate identity DDL:** Per ADR-001 §2.1 the engine's former `organizations`/`users`/`tenants` migrations are deleted. Org, customer, and end-user records are owned by the control plane (`identity.organizations`, `customer.customers`, `customer.end_users`); the engine consumes them only through the Redis existence caches (`org:{org_id}`, `org:{org_id}:enduser:{end_user_id}`) with a read-only Postgres fallback.

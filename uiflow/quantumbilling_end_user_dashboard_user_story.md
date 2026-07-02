@@ -1,5 +1,7 @@
 # QuantumBilling User Story: End User Dashboard
 
+> Aligned with ADR-001 (2026-07-01).
+
 **QB-STORY-028** · Sprint 3 · Phase: UI Feature
 
 ---
@@ -25,6 +27,8 @@
 The End User Dashboard is the **landing page** for authenticated End Users. It provides a high-level overview of personal API usage and authentication status.
 
 **Note:** The End User Dashboard is different from the "My Events" page — it shows **aggregate metrics** (totals, breakdowns), while "My Events" shows individual API call logs.
+
+**Data source (ADR-001 §2):** all usage metrics come from the Go phase-4 analytics APIs, which read the ClickHouse dedup view `events.usage_events_dedup_v` — the sole source of truth for usage. The NestJS layer acts as a **BFF**: it validates the Keycloak JWT, derives the `end_user_id` scope, and proxies the request to the Go APIs with service-to-service auth. There is no Postgres `billing.usage_events` table; the control plane stores no raw usage rows.
 
 ---
 
@@ -58,11 +62,12 @@ The End User Dashboard is the **landing page** for authenticated End Users. It p
    - "My Dashboard" title
    - Current billing period (e.g., "Jun 1 – Jun 30, 2026")
    - Organization name (read-only, for context)
-3. All data shown is **strictly for the authenticated end user only**.
+3. All data shown is **strictly for the authenticated end user only** — the BFF resolves `end_user_id` from the JWT and forwards only that scope to the Go phase-4 APIs.
 
 ### Summary Cards (3-up or 4-up)
 
-4. **My Token Usage** — total tokens consumed (input + output + cached)
+4. **My Token Usage** — total tokens consumed (input + output + thinking)
+   - Sourced from the phase-4 user summary API (ClickHouse dedup view)
    - Displayed as human-readable: e.g., "45.2M" or "1.2B"
    - Icon: zap
    - Color: amber (#F59E0B)
@@ -73,18 +78,19 @@ The End User Dashboard is the **landing page** for authenticated End Users. It p
    - Color: cyan (#00D9FF)
 
 6. **Active API Keys** — count of API keys with status "active" or "expiring"
+   - Read from `developer.api_keys` (control-plane Postgres)
    - Icon: key
    - Color: purple (#A855F7)
    - Clicking navigates to API Keys page
 
-7. **My Cost** (optional) — estimated cost of usage
-   - Calculated from tokens × applicable rates
+7. **My Cost** (optional) — cost of usage
+   - Returned by the phase-4 user summary API (aggregated `cost` from ClickHouse)
    - Icon: dollar
    - Color: green (#22C55E)
 
 ### Usage by Model Section
 
-8. **Usage by Model** section displays a grid of model cards.
+8. **Usage by Model** section displays a grid of model cards, sourced from the phase-4 per-model usage API.
 9. Each model card shows:
    - **Model Name** (e.g., "GPT-4", "Claude 3 Opus", "Gemini Pro")
    - **Token Count** for that model (formatted: e.g., "28.4M")
@@ -111,7 +117,7 @@ The End User Dashboard is the **landing page** for authenticated End Users. It p
 
 ### Recent Activity (Optional)
 
-17. **Recent Activity** section shows the last 3-5 events as a mini-preview.
+17. **Recent Activity** section shows the last 3-5 events as a mini-preview, sourced from the phase-4 daily activity / recent events data.
 18. Each preview row shows:
     - Timestamp
     - Model (icon/badge)
@@ -138,6 +144,7 @@ The End User Dashboard is the **landing page** for authenticated End Users. It p
 **Then:** "My Token Usage" card shows total tokens
 **And:** "My Requests" card shows total API calls
 **And:** both are scoped to the current billing period
+**And:** the values match the phase-4 summary API response (ClickHouse dedup view)
 
 ---
 
@@ -160,7 +167,7 @@ The End User Dashboard is the **landing page** for authenticated End Users. It p
 
 ### TC-05 — View active API keys count
 
-**Given:** END_USER has 3 active API keys
+**Given:** END_USER has 3 active API keys in `developer.api_keys`
 **Then:** "Active API Keys" card shows "3"
 **And:** clicking the card navigates to API Keys page
 
@@ -202,33 +209,49 @@ The End User Dashboard is the **landing page** for authenticated End Users. It p
 
 ## API Endpoints
 
+### BFF endpoints (NestJS — consumed by the UI)
+
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
-| `GET` | `/api/v1/end-users/:endUserId/usage` | Get end user's usage summary (tokens, requests, cost) | JWT · Guard: `EndUserGuard` |
-| `GET` | `/api/v1/end-users/:endUserId/usage/by-model` | Get usage breakdown by AI model | JWT · Guard: `EndUserGuard` |
-| `GET` | `/api/v1/end-users/:endUserId/api-keys` | List API keys with status | JWT · Guard: `EndUserGuard` |
-| `GET` | `/api/v1/end-users/:endUserId/events/recent` | Get last N events for preview | JWT · Guard: `EndUserGuard` |
+| `GET` | `/api/v1/end-users/:endUserId/usage` | Usage summary (tokens, requests, cost) — proxies phase-4 user summary | JWT · Guard: `EndUserGuard` |
+| `GET` | `/api/v1/end-users/:endUserId/usage/by-model` | Usage breakdown by AI model — proxies phase-4 per-model usage | JWT · Guard: `EndUserGuard` |
+| `GET` | `/api/v1/end-users/:endUserId/api-keys` | List API keys with status (reads `developer.api_keys`) | JWT · Guard: `EndUserGuard` |
+| `GET` | `/api/v1/end-users/:endUserId/events/recent` | Last N events for preview — proxies phase-4 activity data | JWT · Guard: `EndUserGuard` |
+
+### Upstream Go phase-4 APIs (called by the BFF, service-to-service auth with resolved scope)
+
+| Method | Path | Description | Reads |
+|--------|------|-------------|-------|
+| `GET` | `/v1/users/{end_user_id}/summary` | Per-user totals: tokens (input/output/thinking), requests, cost | ClickHouse `events.usage_events_dedup_v` |
+| `GET` | `/v1/users/{end_user_id}/models/usage` | Per-user usage grouped by model | ClickHouse `events.usage_events_dedup_v` |
+| `GET` | `/v1/users/{end_user_id}/activity/daily` | Per-user daily activity series / recent events | ClickHouse `events.usage_events_dedup_v` |
 
 ---
 
-## Data Tables Used
+## Data Sources Used
 
-| Table | Schema | Operation | Key Columns |
-|-------|--------|-----------|-------------|
-| `usage_events` | `billing` | SELECT · SUM | `end_user_id, input_tokens, output_tokens, cached_tokens, cost, model, event_timestamp` |
-| `end_users` | `customer` | SELECT | `id, org_id, name, email` |
-| `api_keys` | `auth` | SELECT | `end_user_id, status, created_at` |
-| `organizations` | `identity` | SELECT | `id, name` |
+| Source | Store | Operation | Key Fields |
+|--------|-------|-----------|------------|
+| `events.usage_events_dedup_v` (via Go phase-4 APIs — never queried directly by NestJS) | ClickHouse | Aggregated reads | `end_user_id, input_tokens, output_tokens, thinking_tokens, cost, model, timestamp_ms` |
+| `end_users` | Postgres · `customer` | SELECT | `id, org_id, customer_id, name, email` |
+| `api_keys` | Postgres · `developer` (canonical schema — ERD conflict C-3) | SELECT | `id, org_id, customer_id, end_user_id, status, key_prefix, last_used_at, expires_at, created_at` |
+| `organizations` | Postgres · `identity` | SELECT | `id, name` |
+
+> **Removed per ADR-001 §2:** Postgres `billing.usage_events` no longer exists. Raw usage lives only in ClickHouse; the dashboard reads it exclusively through the Go phase-4 user APIs.
 
 ---
 
 ## Usage Calculation
 
+Performed by the Go phase-4 APIs against the ClickHouse dedup view (not in NestJS):
+
 ```
-My Token Usage = SUM(input_tokens) + SUM(output_tokens) + SUM(cached_tokens)
+My Token Usage = SUM(input_tokens) + SUM(output_tokens) + SUM(thinking_tokens)
 My Requests = COUNT(*)
-My Cost = SUM(input_tokens × input_rate) + SUM(output_tokens × output_rate)
+My Cost = SUM(cost)   -- per-event cost recorded at ingest; rated per ADR-001 §3
 ```
+
+All queries filter `end_user_id = {end_user_id}` and the billing-period window on `timestamp_ms`.
 
 ---
 
@@ -301,15 +324,18 @@ My Cost = SUM(input_tokens × input_rate) + SUM(output_tokens × output_rate)
 
 ## Dependencies & Notes for Agent
 
-- **Data Isolation:** ALL queries MUST filter by `end_user_id = actor.end_user_id`. This is strictly enforced.
+- **Data Isolation:** the BFF derives `end_user_id` from the authenticated actor and forwards only that scope to the Go phase-4 APIs. The UI never passes a user-controlled ID upstream. This is strictly enforced.
+- **BFF Proxy Pattern (ADR-001 §2):** NestJS holds no usage data and runs no usage SQL. It validates the Keycloak JWT, resolves scope, and proxies to the Go phase-4 user APIs over service-to-service auth. Phase-4 reads only the ClickHouse dedup view.
+- **Vocabulary (ADR-001 §2.1):** the per-user identifier is `end_user_id` (= `customer.end_users.id`) everywhere — API paths, event fields, ClickHouse columns.
+- **API Keys:** read from `developer.api_keys` — the canonical schema per ERD conflict C-3 (NOT `auth.api_keys`). Control-plane Postgres, written by NestJS.
 - **Organization Context:** End Users belong to one Organization. Display the org name for context but do not allow changes.
-- **Usage Period:** Metrics are for the current billing period by default (or last 30 days for new users without subscription).
+- **Usage Period:** Metrics are for the current billing period by default — the subscription anniversary window per ADR-001 §3.1 (or last 30 days for new users without subscription). Period membership is by `timestamp_ms`.
 - **Real-Time Updates:** API key status should refresh periodically. Use polling or WebSocket for live status updates.
 - **Model Colors:** Use consistent model colors across the dashboard (e.g., GPT-4 = cyan, Claude = purple, Gemini = amber).
-- **No Cross-User Access:** Even if an End User guesses another user's ID, the guard layer blocks access.
+- **No Cross-User Access:** Even if an End User guesses another user's ID, the guard layer blocks access before any upstream call.
 - **Billing Period:** Display the billing period so users understand the time window for metrics.
 - **Large Number Formatting:** Format tokens as "45.2M" or "1.2B" — do not show raw integers.
-- **Cost Estimate:** If real-time cost calculation is expensive, cache or calculate periodically rather than on every page load.
+- **Cost:** cost comes pre-aggregated from the phase-4 summary API; the BFF performs no rate math. Cache the response briefly if page-load latency matters.
 
 ---
 

@@ -1,5 +1,7 @@
 # QuantumBilling User Story: Reports
 
+> Aligned with ADR-001 (2026-07-01).
+
 **QB-STORY-021** · Sprint 6 · Phase: Platform Intelligence
 
 ---
@@ -28,12 +30,14 @@ The Reports feature enables:
 - **Automated Scheduling** — run reports on a recurring basis (daily, weekly, monthly) or one-time
 - **Multi-Recipient Delivery** — send reports to multiple email addresses automatically
 - **Export Formats** — generate reports in PDF, CSV, or Excel formats
+- **Warehouse-Native Export (CR-13)** — scheduled sync of usage aggregates, invoices, and the revenue-recognition ledger to customer-owned Snowflake / BigQuery / S3 Parquet, alongside the CSV/PDF outputs
 - **Report Management** — view, edit, pause, resume, run immediately, and download past reports
 
 Key capabilities:
 - ORG_ADMIN manages reports for their own organization; SUPER_ADMIN manages platform-wide reports
 - Report Builder provides a three-step workflow: Select Metrics → Configure Filters → Set Schedule
-- Available metric categories: Revenue (MRR, ARR, NRR, GRR), Usage (Tokens, API Calls), Customers (Active Customers, Churn Rate)
+- Available metric categories: Revenue (MRR, ARR, NRR, GRR), Usage (Tokens, API Calls), Customers (Active Customers, Churn Rate), Margin (provider cost vs rated revenue — CR-11), Revenue Recognition (deferred vs recognized — CR-5)
+- Data sourcing (ADR-001 §2): **usage metrics come from the Go phase-4 analytics APIs over ClickHouse** (`events.usage_events_dedup_v`); **revenue metrics come from the canonical billing tables** (`billing.invoices`, `billing.payments`, `billing.credit_ledger`, `billing.revenue_recognition_ledger`) — there is no Postgres `usage_events` table
 - Filters include date range, plan type, customer search, and AI model multiselect
 - Scheduling options: One-time, Daily, Weekly, Monthly
 - Each report tracks: last run timestamp, next scheduled run, recipient list, and status (active/paused)
@@ -69,7 +73,7 @@ Key capabilities:
 8. A table titled "All Reports" lists all reports for the org/platform.
 9. Table columns: Report, Type, Schedule, Last Run, Next Run, Status, Actions.
 10. Report column shows: report icon, report name, recipient count.
-11. Type column shows a colored badge: revenue (purple #A855F7), usage (cyan #00D9FF), cohort (green #22C55E), contracts (amber #F59E0B).
+11. Type column shows a colored badge: revenue (purple #A855F7), usage (cyan #00D9FF), cohort (green #22C55E), contracts (amber #F59E0B), margin (rose #F43F5E — CR-11), rev_rec (indigo #6366F1 — CR-5).
 12. Schedule column shows schedule icon and frequency label (Once, Daily, Weekly, Monthly).
 13. Last Run column shows the timestamp of the last successful run (formatted as YYYY-MM-DD or "Never").
 14. Next Run column shows the timestamp of the next scheduled run (blank for "Once" reports that have already run).
@@ -97,6 +101,8 @@ Key capabilities:
     - API Calls — Total API requests (usage category)
     - Active Customers — Currently active customers (customers category)
     - Churn Rate — Monthly customer churn rate (customers category)
+    - Gross Margin — rated revenue minus provider cost (COGS) per org/model/provider (margin category — CR-11)
+    - Recognized / Deferred Revenue — ASC 606 recognition ledger balances for period close (rev_rec category — CR-5)
 25. Each metric card shows: checkbox, metric name, description, and category badge.
 26. At least one metric must be selected to proceed to the next tab.
 27. Selected metrics are visually highlighted (e.g., purple border, filled checkbox).
@@ -117,8 +123,8 @@ Key capabilities:
 36. An input field labeled "Recipients (comma separated)" accepts one or more email addresses.
 37. Recipients input shows placeholder text: "email@example.com, email2@example.com".
 38. At least one valid email address is required to create a scheduled report.
-39. An "Export Format" section displays toggle buttons: PDF, CSV, Excel.
-40. "PDF" is selected by default.
+39. An "Export Format" section displays toggle buttons: PDF, CSV, Excel, Warehouse Sync.
+40. "PDF" is selected by default. Selecting "Warehouse Sync" (CR-13) reveals a destination selector — Snowflake, BigQuery, or S3 Parquet — plus connection/credential fields; warehouse destinations deliver via scheduled sync instead of email attachment.
 41. A "Create Report" button submits the form and closes the modal.
 42. A "Cancel" button discards changes and closes the modal without saving.
 
@@ -289,7 +295,7 @@ Key capabilities:
 
 ### TC-14 — Filter reports by type
 
-**Given:** org `acme` has reports of types: revenue, usage, cohort, contracts
+**Given:** org `acme` has reports of types: revenue, usage, cohort, contracts, margin, rev_rec
 **When:** using a filter or search to view only "revenue" reports
 **Then:** table shows only reports where type = 'revenue'
 
@@ -325,15 +331,19 @@ Key capabilities:
 
 | Table | Schema | Operation | Key Columns |
 |-------|--------|-----------|-------------|
-| `reports` | `reporting` | SELECT · INSERT · UPDATE · DELETE | `id, org_id, name, type, schedule, status, last_run_at, next_run_at, created_at` |
+| `reports` | `reporting` | SELECT · INSERT · UPDATE · DELETE | `id, org_id, name, type (revenue\|usage\|cohort\|contracts\|margin\|rev_rec — ERD §6), schedule, status, last_run_at, next_run_at, created_at` |
 | `report_metrics` | `reporting` | SELECT · INSERT | `id, report_id, metric_id, category` |
 | `report_filters` | `reporting` | SELECT · INSERT | `id, report_id, filter_type, filter_value` |
 | `report_recipients` | `reporting` | SELECT · INSERT · DELETE | `id, report_id, email` |
-| `report_runs` | `reporting` | INSERT · SELECT | `id, report_id, status, output_url, executed_at` |
-| `subscriptions` | `customer` | SELECT | `id, org_id, status, mrr` |
-| `usage_events` | `billing` | SELECT · COUNT · SUM | `id, org_id, meter_id, event_timestamp, value` |
-| `customers` | `customer` | SELECT | `id, org_id, name, status, plan_type` |
+| `report_runs` | `reporting` | INSERT · SELECT | `id, report_id, status, output_url, executed_at` — CR-13 adds warehouse sync destinations |
+| `subscriptions` | `customer` | SELECT | `id, org_id, customer_id, plan_id, status` (`mrr` is derived — C-22) |
+| `invoices` | `billing` | SELECT | `id, org_id, customer_id, status, total, period_start, period_end` — revenue metrics source |
+| `payments` | `billing` | SELECT | `id, invoice_id, amount, status` |
+| `revenue_recognition_ledger` | `billing` | SELECT | `id, org_id, customer_id, entry_type, amount, recognition_period` — rev_rec reports (CR-5) |
+| `customers` | `customer` | SELECT | `id, org_id, name, status` |
 | `organizations` | `identity` | SELECT | `id, name` |
+
+> **No `usage_events` table is read (ADR-001 §2 — deleted).** Usage and margin report data (tokens, API calls, provider cost/COGS vs rated revenue) is fetched from the Go phase-4 analytics APIs over ClickHouse `events.usage_events_dedup_v`, scoped by the NestJS BFF.
 
 ---
 
@@ -392,6 +402,9 @@ Key capabilities:
 | `REPORT_MAX_RECIPIENTS` | Maximum number of recipients per report (default: `20`) |
 | `REPORT_RETENTION_DAYS` | Days to keep generated report files before cleanup (default: `90`) |
 | `REPORT_OUTPUT_STORAGE_PATH` | Local path or S3 bucket for storing generated reports |
+| `ANALYTICS_API_BASE_URL` | Base URL of the Go phase-4 analytics APIs (usage/margin data source; svc-to-svc auth per ADR-001 §2) |
+| `WAREHOUSE_EXPORT_ENABLED` | Enable CR-13 warehouse-native export (default: `true`) |
+| `WAREHOUSE_EXPORT_DESTINATIONS` | Allowed destinations: `snowflake,bigquery,s3_parquet` |
 | `SMTP_HOST` | SMTP server host for email delivery |
 | `SMTP_PORT` | SMTP server port (default: `587`) |
 | `SMTP_USER` | SMTP authentication username |
@@ -467,6 +480,8 @@ Accessible at `/reports` for ORG_ADMIN; `/platform/reports` for SUPER_ADMIN.
 | usage | #00D9FF (cyan) | Total Tokens, API Calls |
 | cohort | #22C55E (green) | Churn Rate, Active Customers |
 | contracts | #F59E0B (amber) | Contract-related metrics |
+| margin (CR-11) | #F43F5E (rose) | Gross Margin, COGS per model/provider, margin % |
+| rev_rec (CR-5) | #6366F1 (indigo) | Recognized Revenue, Deferred Revenue, True-ups |
 
 ---
 
@@ -474,7 +489,8 @@ Accessible at `/reports` for ORG_ADMIN; `/platform/reports` for SUPER_ADMIN.
 
 - **Report Scheduler:** A background job (cron or node-cron) must poll for due reports every `REPORT_SCHEDULER_INTERVAL_MIN` minutes. For each due report (`nextRun <= now() AND status = 'active'`), execute and update timestamps.
 - **Email Delivery:** Use Nodemailer or SendGrid for email delivery. Each report execution sends an email to all recipients with the report attached.
-- **Report Generation:** Report data is assembled by querying `usage_events`, `subscriptions`, and `customers` tables based on the selected metrics and filters. Apply date range filter to `event_timestamp`.
+- **Report Generation (ADR-001 §2):** Usage metrics (tokens, API calls) and margin inputs (provider cost/COGS — CR-11) are fetched from the Go phase-4 analytics APIs backed by ClickHouse `events.usage_events_dedup_v`, with the date-range filter applied to `timestamp_ms`. Revenue metrics are computed from the canonical billing tables (`billing.invoices.total`, `billing.payments`, `billing.credit_ledger`) plus `customer.subscriptions`/`customer.customers`; rev-rec reports (CR-5) read `billing.revenue_recognition_ledger`. No Postgres `usage_events` table exists.
+- **Warehouse-native export (CR-13):** A report (or standalone sync schedule) can target customer-owned Snowflake, BigQuery, or S3 Parquet. The sync ships usage aggregates, invoices, and the recognition ledger on the report's schedule; destination credentials are stored encrypted, and each sync run is recorded in `report_runs`.
 - **File Storage:** Generated reports (PDF/CSV/Excel) should be stored in S3 or local storage. Store the path/URL in `report_runs.output_url`.
 - **One-time vs. Recurring:** If `schedule = 'Once'`, do not update `nextRun` after execution. If recurring, recalculate `nextRun` based on frequency.
 - **Pause Behavior:** When paused, set `nextRun = null` so the scheduler skips the report.

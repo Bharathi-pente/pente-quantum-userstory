@@ -1,5 +1,7 @@
 # QuantumBilling User Story: Dunning — QB-STORY-012
 
+> Aligned with ADR-001 (2026-07-01).
+
 ---
 
 ## Story ID & Metadata
@@ -38,7 +40,9 @@ As an **ORG_ADMIN**, I want to configure automated dunning policies — sequence
 
 ### Overview
 
-The dunning system enables automated, policy-driven collection of overdue invoices through a configurable series of retry steps and escalation actions. Each dunning policy belongs to an organization (`org_id`) and defines an ordered sequence of steps (via `dunning_steps`) with associated actions (`EMAIL`, `SMS`, `WEBHOOK`, `SUSPEND`, `ESCALATE`) triggered at configurable day offsets after the invoice due date.
+The dunning system enables automated, policy-driven collection of overdue invoices through a configurable series of retry steps and escalation actions. Each dunning policy belongs to an organization (`org_id`) and defines an ordered sequence of steps (via `dunning_steps`) with associated actions (`EMAIL`, `SMS`, `WEBHOOK`, `SUSPEND`, `ESCALATE` — the unified enum, conflict C-11) triggered at configurable day offsets after the invoice due date.
+
+Dunning is integrated with **payment auto-collection (CR-6)**: invoices are auto-charged against the customer's default Stripe method on finalization, and failed auto-charges follow a smart retry schedule executed by the Go billing worker. When retries are exhausted, the invoice escalates into the dunning schedule below. A payment received mid-dunning cancels all pending communications and pending retries.
 
 ### Key Concepts
 
@@ -52,11 +56,12 @@ The dunning system enables automated, policy-driven collection of overdue invoic
 
 ### Billing Engine Batch Job
 
-The billing engine's invoice batch job evaluates all `ISSUED` and `OVERDUE` invoices and triggers the dunning workflow:
+The billing engine's invoice batch job evaluates all `pending` and `overdue` invoices (unified lowercase status enum, conflict C-4) and triggers the dunning workflow:
 
-- **Day 0**: Invoice becomes `OVERDUE` (past `due_date`)
+- **On finalization**: Invoice auto-charged (CR-6); a failed charge starts the smart retry schedule
+- **Day 0**: Invoice becomes `overdue` (past `due_date`); exhausted auto-charge retries escalate here
 - **Day N** (per step): Execute the action — send email/SMS/webhook, or suspend service
-- **Each action** creates a `dunning_communications` record
+- **Each action** creates a `dunning_communications` record; deliveries are logged to `communication.notification_delivery_log` (conflict C-9)
 
 ### Actions
 
@@ -73,7 +78,8 @@ The billing engine's invoice batch job evaluates all `ISSUED` and `OVERDUE` invo
 - ORG_ADMIN can configure multiple policies (e.g., "Standard 30-day", "Enterprise 90-day")
 - ORG_ADMIN can manually trigger a dunning step for a specific invoice
 - SUPER_ADMIN can manage policies for any org
-- If customer pays mid-dunning: invoice status → `PAID`, `dunning_communications` for that invoice are cancelled
+- A failed auto-charge (CR-6) enters the smart retry schedule; when retries are exhausted the invoice escalates into the applicable dunning policy
+- If customer pays mid-dunning: invoice status → `paid`, pending `dunning_communications` for that invoice are cancelled, and any pending auto-charge retries are stopped
 - Only one policy per org can be marked `is_default = true`
 
 ---
@@ -99,11 +105,13 @@ The billing engine's invoice batch job evaluates all `ISSUED` and `OVERDUE` invo
 
 4. ORG_ADMIN can activate a policy (status: DRAFT → ACTIVE); only ACTIVE policies are evaluated by the billing engine batch job.
 
-5. The billing engine batch job evaluates all OVERDUE invoices daily and, for each invoice without an active paid status, determines the applicable policy (default or org-assigned) and advances the dunning workflow by creating `dunning_communications` records for the next applicable step.
+5. The billing engine batch job evaluates all `overdue` invoices daily and, for each invoice not yet `paid`, determines the applicable policy (default or org-assigned) and advances the dunning workflow by creating `dunning_communications` records for the next applicable step.
+
+5a. A failed auto-charge on invoice finalization (CR-6) follows the smart retry schedule executed by the Go billing worker; when retries are exhausted, the invoice enters the dunning schedule at step 1 (or the step matching its days-overdue offset).
 
 6. Each dunning communication record is linked to `billing.dunning_policies.id`, `billing.dunning_steps.id`, `billing.invoices.id`, and `customer.customers.id`; channel and status are recorded.
 
-7. When a payment is received for an invoice mid-dunning, the invoice status transitions to PAID and all pending `dunning_communications` for that invoice are cancelled (status → CANCELLED).
+7. When a payment is received for an invoice mid-dunning (auto-charge retry succeeding or manual/wire recording), the invoice status transitions to `paid` and all pending `dunning_communications` for that invoice are cancelled (status → CANCELLED); pending auto-charge retries are stopped.
 
 8. ORG_ADMIN can manually trigger the dunning workflow for a specific invoice via `POST /api/v1/invoices/:invoiceId/trigger-dunning`; the system evaluates the current step and advances accordingly.
 
@@ -124,7 +132,7 @@ The billing engine's invoice batch job evaluates all `ISSUED` and `OVERDUE` invo
 **Then:** 201 returned, steps created with correct step_order
 **When:** PATCH `/api/v1/dunning-policies/:policyId` with `{status: "ACTIVE"}`
 **Then:** 200 returned, policy status = ACTIVE
-**When:** Batch job runs for an OVERDUE invoice with no prior dunning
+**When:** Batch job runs for an `overdue` invoice with no prior dunning
 **Then:** dunning_communications record created for step 1, status = PENDING
 
 ---
@@ -132,7 +140,7 @@ The billing engine's invoice batch job evaluates all `ISSUED` and `OVERDUE` invo
 ### TC-02 — Happy path: Dunning communication state transitions
 
 **Given:** ACTIVE dunning policy with step 1 (action: EMAIL, day_offset: 3)
-**Given:** OVERDUE invoice `INV-001` past due_date + 3 days
+**Given:** `overdue` invoice `INV-001` past due_date + 3 days (auto-charge retries exhausted)
 **When:** Billing engine batch job executes step 1
 **Then:** `dunning_communications` record created: status = PENDING, channel = EMAIL
 **When:** Email provider callback indicates email SENT
@@ -168,9 +176,9 @@ The billing engine's invoice batch job evaluates all `ISSUED` and `OVERDUE` invo
 
 ### TC-06 — Happy path: Invoice paid mid-dunning cancels communications
 
-**Given:** OVERDUE invoice `INV-002` has 2 pending dunning_communications
-**When:** Payment received for `INV-002`; invoice status → PAID
-**Then:** All pending dunning_communications for `INV-002` set to CANCELLED
+**Given:** `overdue` invoice `INV-002` has 2 pending dunning_communications
+**When:** Payment received for `INV-002` (successful auto-charge retry or manual/wire recording); invoice status → `paid`
+**Then:** All pending dunning_communications for `INV-002` set to CANCELLED; pending auto-charge retries stopped
 **When:** Subsequent batch job run
 **Then:** No new dunning_communications created for `INV-002`
 
@@ -187,9 +195,9 @@ The billing engine's invoice batch job evaluates all `ISSUED` and `OVERDUE` invo
 
 ### TC-08 — Negative: Manual trigger on fully paid invoice
 
-**Given:** Invoice `INV-004` with status = PAID
+**Given:** Invoice `INV-004` with status = `paid`
 **When:** POST `/api/v1/invoices/:invoiceId/trigger-dunning`
-**Then:** 409 CONFLICT — cannot trigger dunning on PAID invoice
+**Then:** 409 CONFLICT — cannot trigger dunning on a `paid` invoice
 
 ---
 
@@ -234,12 +242,14 @@ The billing engine's invoice batch job evaluates all `ISSUED` and `OVERDUE` invo
 | Table | Operation | Key Columns |
 |-------|-----------|--------------|
 | `billing.dunning_policies` | INSERT · SELECT · UPDATE · DELETE | `id, org_id, name, retry_schedule (jsonb), is_default, status` |
-| `billing.dunning_steps` | INSERT · SELECT · UPDATE · DELETE | `id, policy_id, step_order, action, day_offset, escalate_to` |
+| `billing.dunning_steps` | INSERT · SELECT · UPDATE · DELETE | `id, policy_id, step_order, action (EMAIL\|SMS\|WEBHOOK\|SUSPEND\|ESCALATE — C-11), day_offset, escalate_to` |
 | `billing.dunning_communications` | INSERT · SELECT · UPDATE | `id, dunning_policy_id, dunning_step_id, invoice_id, customer_id, channel, status` |
-| `billing.invoices` | SELECT · UPDATE | `id, customer_id, invoice_number, amount, credits_applied, currency, status` |
+| `billing.invoices` | SELECT · UPDATE | `id, customer_id, invoice_number, total, credits_applied, currency, status (draft\|pending\|paid\|overdue\|voided — C-4)` |
+| `billing.payments` | SELECT | `id, invoice_id, status, collection_mode (auto_charge\|manual\|wire — CR-6), failure_reason` |
 | `customer.customers` | SELECT | `id, org_id, name, email` |
 | `identity.organizations` | SELECT | `id, name, billing_email` |
 | `communication.notification_templates` | SELECT | `id, org_id, template_code, channel, subject, template_body, template_html, is_active, is_system` |
+| `communication.notification_delivery_log` | INSERT · SELECT | `id, org_id, customer_id, channel, recipient, status, error_code, error_message, sent_at` — canonical schema is `communication` (conflict C-9) |
 | `billing.invoice_reminder_schedules` | SELECT | `id, invoice_id, org_id, reminder_number, trigger_days, trigger_type, status` |
 | `audit_logs` | INSERT | `id, actor_id, action, target_id, org_id, metadata, created_at` |
 
@@ -290,7 +300,7 @@ PENDING
 
 ### Dunning Policy State Machine
 
-**Note:** `dunning_policy_status` enum values in postgres (after migration): `active`, `suspended`, `cancelled`, `draft`, `inactive`
+**Note:** `dunning_policy_status` enum values in postgres: `draft`, `active`, `inactive` (matching the DRAFT → ACTIVE → INACTIVE state machine)
 
 ```
 DRAFT
@@ -306,15 +316,19 @@ DRAFT
 
 ### Invoice Dunning Lifecycle
 
+Invoice statuses use the unified lowercase enum `draft | pending | paid | overdue | voided` (conflict C-4).
+
 ```
-ISSUED
-  └──→ OVERDUE      (past due_date)
-        ├──→ DUNNING (batch job advances workflow)
-        │     ├──→ Step 1 (day_offset N) → communication
-        │     ├──→ Step 2 (day_offset N+M) → communication
-        │     └──→ Step N → final escalation
-        └──→ PAID       (customer pays)
-              └──→ All pending communications → CANCELLED
+pending  (finalized; auto-charge attempted — CR-6)
+  ├──→ paid          (auto-charge or manual/wire payment succeeds)
+  └──→ (auto-charge failed → smart retries by billing worker)
+        └──→ overdue      (past due_date / retries exhausted)
+              ├──→ dunning workflow (batch job advances)
+              │     ├──→ Step 1 (day_offset N) → communication
+              │     ├──→ Step 2 (day_offset N+M) → communication
+              │     └──→ Step N → final escalation
+              └──→ paid       (customer pays mid-dunning)
+                    └──→ All pending communications → CANCELLED; pending retries stopped
 ```
 
 ---
@@ -330,11 +344,11 @@ ISSUED
 | `POLICY_ALREADY_ACTIVE` | 409 | Attempting to activate a policy already in ACTIVE status |
 | `CANNOT_MODIFY_ACTIVE_POLICY` | 409 | Attempting to add/update/delete steps on an ACTIVE policy |
 | `DEFAULT_POLICY_EXISTS` | 409 | Attempting to set `is_default = true` when another default already exists for this org |
-| `INVOICE_NOT_OVERDUE` | 422 | Attempting to trigger dunning on a non-OVERDUE invoice |
-| `INVOICE_ALREADY_PAID` | 409 | Attempting to trigger dunning on a PAID invoice |
+| `INVOICE_NOT_OVERDUE` | 422 | Attempting to trigger dunning on an invoice that is not `overdue` |
+| `INVOICE_ALREADY_PAID` | 409 | Attempting to trigger dunning on a `paid` invoice |
 | `FORBIDDEN` | 403 | Actor role is CUSTOMER or END_USER |
 | `INSUFFICIENT_PERMISSION` | 403 | Actor is ORG_ADMIN attempting to modify another org's policy |
-| `INVALID_ACTION` | 422 | Action field must be one of: email_reminder, phone_reminder, suspend_service, final_notice, collections, custom |
+| `INVALID_ACTION` | 422 | Action field must be one of: `EMAIL`, `SMS`, `WEBHOOK`, `SUSPEND`, `ESCALATE` (unified enum, conflict C-11) |
 | `INVALID_DAY_OFFSET` | 422 | `day_offset` must be a positive integer |
 | `STEP_ORDER_CONFLICT` | 409 | `step_order` already exists for this policy |
 | `TEMPLATE_NOT_FOUND` | 404 | Notification template code not found for dunning email |
@@ -436,14 +450,15 @@ ISSUED
 ### Database & ORM
 
 - Prisma model: `DunningPolicy` with enum `PolicyStatus { DRAFT ACTIVE INACTIVE }` (maps to postgres: `draft active inactive`)
-- Prisma model: `DunningStep` with enum `StepAction { EMAIL_REMINDER PHONE_REMINDER SUSPEND_SERVICE FINAL_NOTICE COLLECTIONS CUSTOM }` (maps to postgres: `email_reminder phone_reminder suspend_service final_notice collections custom`)
+- Prisma model: `DunningStep` with enum `StepAction { EMAIL SMS WEBHOOK SUSPEND ESCALATE }` (maps to postgres: `email sms webhook suspend escalate`) — unified per conflict C-11; the legacy `EMAIL_REMINDER/PHONE_REMINDER/SUSPEND_SERVICE/FINAL_NOTICE/COLLECTIONS/CUSTOM` set is replaced
 - Prisma model: `DunningCommunication` with enum `CommunicationStatus { PENDING SENT FAILED OPENED CANCELLED }`
 - FK constraints must be validated at the database level
 
 ### Billing Engine Batch Job
 
 - Implemented as a scheduled BullMQ job or Temporal workflow
-- Query: All invoices with `status = 'OVERDUE'` joined with `billing.dunning_policies` (via `is_default` or org-level assignment)
+- Query: All invoices with `status = 'overdue'` (C-4) joined with `billing.dunning_policies` (via `is_default` or org-level assignment)
+- Auto-collection integration (CR-6): the Go billing worker owns the smart retry schedule for failed auto-charges; the dunning batch job picks up invoices whose retries are exhausted (or that were never auto-chargeable — no default method) once they turn `overdue`
 - For each overdue invoice, determine current dunning step by querying `dunning_communications` with `invoice_id` and finding the highest `step_order` with a record
 - Execute next step's action asynchronously (do not block batch job)
 - Idempotency: Before creating a new `dunning_communications` record, check that one does not already exist for the same `invoice_id + step_id` combination
@@ -454,6 +469,7 @@ ISSUED
 - Render template with variables: `{{customer_name}}`, `{{invoice_number}}`, `{{amount_due}}`, `{{due_date}}`, `{{org_name}}`
 - Email open tracking: Inject 1x1 pixel image with unique tracking ID; update `dunning_communications.status = OPENED` on pixel fetch
 - SMS: Use configured SMS provider (Twilio or similar); update status to SENT/FAILED based on provider callback
+- Every outbound delivery (email/SMS/webhook) is also logged to `communication.notification_delivery_log` — this table lives in the `communication` schema (conflict C-9), not `billing`
 
 ### Webhook Delivery
 
@@ -481,7 +497,7 @@ ISSUED
 
 ### Key API Design Notes
 
-- All list endpoints support pagination: `?page=1&limit=20` with response shape `{data: [], totalCount: number, page: number, limit: number, hasNextPage: boolean}`
+- All list endpoints support pagination: `?page=1&limit=20` with response shape `{data: [], total_count: number, page: number, limit: number, has_next_page: boolean}`
 - All IDs are UUID v4
 - Timestamps in ISO 8601 format (UTC)
 - Policy `retry_schedule` JSONB schema:

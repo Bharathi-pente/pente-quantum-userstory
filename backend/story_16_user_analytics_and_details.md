@@ -1,5 +1,7 @@
 # Story 16 — User Analytics & Details
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 4 — Aggregation & Analytics Reporting APIs
 > **Depends on:** Phase 4 Overview (ClickHouse `usage_events_dedup_v` view must exist from Phase 1)
 > **Blocks:** Nothing (can be developed in parallel with other Phase 4 stories)
@@ -8,12 +10,12 @@
 
 ## Description
 
-As a **platform administrator or tenant customer**, I need access to metrics showing token consumption and API request habits for individual users within my organization, so that I can audit high-volume consumers and trace cost allocations.
+As a **Platform Administrator or Customer User**, I need access to metrics showing token consumption and API request habits for individual end users within my organization, so that I can audit high-volume consumers and trace cost allocations.
 
 This story implements three user-centric aggregation endpoints:
-*   `GET /v1/users/{user_id}/summary`: Overall metrics for a single user (total events, tokens, cost estimates, and error rates).
-*   `GET /v1/users/{user_id}/models/usage`: Detailed breakdown of models queried by a specific user.
-*   `GET /v1/users/{user_id}/activity/daily`: Time-series query of a single user's activity over a given date range.
+*   `GET /v1/users/{end_user_id}/summary`: Overall metrics for a single end user (total events, tokens, cost estimates, and error rates).
+*   `GET /v1/users/{end_user_id}/models/usage`: Detailed breakdown of models queried by a specific end user.
+*   `GET /v1/users/{end_user_id}/activity/daily`: Time-series query of a single end user's activity over a given date range.
 
 ---
 
@@ -23,18 +25,18 @@ This story implements three user-centric aggregation endpoints:
 
 | # | Criterion | Details / Edge Cases |
 |---|---|---|
-| 1 | `user_id` path parameter must be present and validated; empty parameters return `400 BAD_REQUEST`. | Basic formatting sanity checks. |
-| 2 | Exposes optional query filter `org_id` (mandatory if requesting caller is not a platform admin). | If query is missing `org_id` and caller is not platform admin, return `400` with code `MISSING_ORG_ID`. |
+| 1 | `end_user_id` path parameter must be present and validated; empty parameters return `400 BAD_REQUEST`. | Basic formatting sanity checks. |
+| 2 | Exposes optional query filter `org_id` (mandatory if requesting caller is not a Platform Administrator). | If query is missing `org_id` and caller is not a Platform Administrator, return `400` with code `MISSING_ORG_ID`. |
 | 3 | Exposes optional date range query parameters: `start_date` and `end_date` (format: `YYYY-MM-DD`). | Malformed parameters return `400` with code `INVALID_DATE_FORMAT`. |
 
 ### Database Query and Execution Constraints
 
 | # | Criterion | Details / Edge Cases |
 |---|---|---|
-| 4 | All SQL queries executing against ClickHouse must query `events.usage_events_dedup_v` and run under a context deadline of 5 seconds. | High-performance columnar scan. |
-| 5 | Verify multi-tenant isolation: Organization managers querying user logs must belong to the organization passed in `org_id`. | Non-matching org contexts return `403 FORBIDDEN` with code `UNAUTHORIZED_ACCESS`. |
-| 6 | Calculate the user's overall API request error rate: `(countIf(status != 'success') / count()) * 100`. | Handle division-by-zero safely (returns `0.0` if total requests are zero). |
-| 7 | User summary returns `200 OK` with JSON fields including: `user_id`, `total_events`, `total_tokens`, `total_cost`, `first_request`, `last_request`, and `error_rate`. | Cost summation must be precision-safe. |
+| 4 | All SQL queries executing against ClickHouse must query `events.usage_events_dedup_v` (filtering the `end_user_id` column, renamed per ADR-001 §2.1) and run under a context deadline of 5 seconds. | High-performance columnar scan. |
+| 5 | Verify multi-tenant isolation: Org Managers querying user logs must belong to the organization passed in `org_id`. Scope arrives via the NestJS BFF's trusted headers (service-to-service auth per Phase 4 Overview → Authentication). | Non-matching org contexts return `403 FORBIDDEN` with code `UNAUTHORIZED_ACCESS`. |
+| 6 | Calculate the end user's overall API request error rate: `(countIf(status != 'success') / count()) * 100`. | Handle division-by-zero safely (returns `0.0` if total requests are zero). |
+| 7 | User summary returns `200 OK` with JSON fields including: `end_user_id`, `total_events`, `total_tokens`, `total_cost`, `first_request`, `last_request`, and `error_rate`. | Cost summation must be precision-safe. |
 | 8 | User daily activity must return an array of date-bucketed stats containing: date (`YYYY-MM-DD`), requests count, tokens sum, and cost sum. | Date buckets must be sorted ascending. |
 | 9 | For empty database records matching the user query, return `200 OK` with zeroed summaries and empty lists (e.g. `total_events: 0`, `activity: []`), never `404` or `null`. | Avoid frontend mapping errors. |
 
@@ -48,7 +50,7 @@ This story implements three user-centric aggregation endpoints:
 * **Then**: Returns `200 OK` with payload:
   ```json
   {
-    "user_id": "user_joe",
+    "end_user_id": "user_joe",
     "org_id": "org_acme",
     "total_events": 60,
     "total_tokens": 12000.0,
@@ -98,4 +100,4 @@ This story implements three user-centric aggregation endpoints:
 
 | Resource | Operation | Purpose |
 |---|---|---|
-| `events.usage_events_dedup_v` (ClickHouse) | `SELECT` (Aggregated) | Computes user summaries, model breakdowns, and daily activity trends |
+| `events.usage_events_dedup_v` (ClickHouse) | `SELECT` (Aggregated) | Computes end-user summaries, model breakdowns, and daily activity trends |

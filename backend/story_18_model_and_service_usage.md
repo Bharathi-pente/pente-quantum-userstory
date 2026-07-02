@@ -1,5 +1,7 @@
 # Story 18 — Model & Service Usage Analytics
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 4 — Aggregation & Analytics Reporting APIs
 > **Depends on:** Phase 4 Overview (ClickHouse `usage_events_dedup_v` view must exist from Phase 1)
 > **Blocks:** Nothing (can be developed in parallel with other Phase 4 stories)
@@ -8,7 +10,7 @@
 
 ## Description
 
-As a **platform administrator or organization manager**, I need comparative analytics detailing token counts, error rates, and costs segmented by AI model (e.g. `gpt-4`, `claude-3`) and upstream service provider (e.g. `openai`, `anthropic`), so that I can choose cost-efficient configurations and detect provider reliability issues.
+As a **Platform Administrator or Org Manager**, I need comparative analytics detailing token counts, error rates, and costs segmented by AI model (e.g. `gpt-4`, `claude-3`) and upstream service provider (e.g. `openai`, `anthropic`), so that I can choose cost-efficient configurations and detect provider reliability issues.
 
 This story implements three comparison and usage breakdown endpoints:
 *   `GET /v1/analytics/models`: Distribution of token usage, requests, and costs grouped by model name.
@@ -23,7 +25,7 @@ This story implements three comparison and usage breakdown endpoints:
 
 | # | Criterion | Details / Edge Cases |
 |---|---|---|
-| 1 | All endpoints accept optional query parameters: `org_id` and `tenant_id` to restrict metrics to a specific account. | Filters must be validated and enforced. |
+| 1 | All endpoints accept optional query parameters: `org_id` and `customer_id` to restrict metrics to a specific account. | Filters must be validated and enforced against the scope forwarded in the NestJS BFF's trusted headers (service-to-service auth per Phase 4 Overview → Authentication). |
 | 2 | Exposes optional date parameters: `start_date` and `end_date` (format: `YYYY-MM-DD`). | Malformed formats return `400 BAD_REQUEST` with code `INVALID_DATE_FORMAT`. |
 | 3 | Date range validation checks: `start_date` must be before or equal to `end_date`. | Invalid ranges return `400` with code `INVALID_DATE_RANGE`. |
 
@@ -91,10 +93,10 @@ This story implements three comparison and usage breakdown endpoints:
 * **When**: Calling `GET /v1/analytics/models/compare?org_id=org_acme&start_date=2026-06-25&end_date=2026-06-27`
 * **Then**: Returns `200 OK` with empty list `[]`.
 
-### TC-04: Filter Model Usage by Tenant
-* **Given**: Event logs exist for multiple tenants under `org_acme`.
-* **When**: Calling `GET /v1/analytics/models?org_id=org_acme&tenant_id=tenant_1`
-* **Then**: Returns `200 OK` showing model usage metrics filtered specifically to events registered for `tenant_1`.
+### TC-04: Filter Model Usage by Customer
+* **Given**: Event logs exist for multiple customers under `org_acme`.
+* **When**: Calling `GET /v1/analytics/models?org_id=org_acme&customer_id=customer_1`
+* **Then**: Returns `200 OK` showing model usage metrics filtered specifically to events registered for `customer_1`.
 
 ### TC-05: Model Comparison Error Rate Calculation
 * **Given**: `claude-3` has 2 failures out of 10 requests.

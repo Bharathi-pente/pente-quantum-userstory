@@ -1,5 +1,7 @@
 # Story 9 — ClickHouse Batch Writer & Deduplication
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 1 — Analytics Worker
 > **Depends on:** Story 8 (Kafka Consumer & Event Deserialization), Story 6 (Database Migrations, Health Endpoints & Observability)
 > **Blocks:** Story 10
@@ -34,7 +36,7 @@ The writer must handle per-event append failures (skip the bad event, continue w
 |---|---|
 | 8 | Function `InsertEventBatch(ctx context.Context, events []*UsageEvent) error` |
 | 9 | Prepare a batch INSERT statement targeting `events.usage_events` with all 20+ columns |
-| 10 | INSERT columns exactly match the table schema from Phase 0 Story 6: `event_id`, `org_id`, `tenant_id`, `session_id`, `user_id`, `source_mode`, `key_id`, `event_type`, `model`, `input_tokens`, `output_tokens`, `thinking_tokens`, `total_tokens`, `unit`, `latency`, `cost`, `status`, `service`, `timestamp_ms`, `ingested_at`, `metadata` |
+| 10 | INSERT columns exactly match the table schema from Phase 0 Story 6: `event_id`, `org_id`, `customer_id`, `session_id`, `end_user_id`, `source_mode`, `key_id`, `event_type`, `model`, `input_tokens`, `output_tokens`, `thinking_tokens`, `total_tokens`, `unit`, `latency`, `cost`, `status`, `service`, `timestamp_ms`, `ingested_at`, `metadata` |
 
 ### Value Computation & Defaulting
 
@@ -57,9 +59,9 @@ The writer must handle per-event append failures (skip the bad event, continue w
 
 | # | Criterion |
 |---|---|
-| 18 | The `events.usage_events` table uses `ReplacingMergeTree(ingested_at)` ordered by `(org_id, tenant_id, event_id)` |
-| 19 | If the same `(org_id, tenant_id, event_id)` row is inserted twice, ClickHouse keeps the one with the latest `ingested_at` during background merges |
-| 20 | A dedup-safe view `events.usage_events_dedup_v` uses `argMax(column, ingested_at)` grouped by `(org_id, tenant_id, event_id)` — this guarantees dedup at query time without waiting for a merge |
+| 18 | The `events.usage_events` table uses `ReplacingMergeTree(ingested_at)` ordered by `(org_id, customer_id, event_id)` |
+| 19 | If the same `(org_id, customer_id, event_id)` row is inserted twice, ClickHouse keeps the one with the latest `ingested_at` during background merges |
+| 20 | A dedup-safe view `events.usage_events_dedup_v` uses `argMax(column, ingested_at)` grouped by `(org_id, customer_id, event_id)` — this guarantees dedup at query time without waiting for a merge |
 | 21 | The worker itself does **not** deduplicate — it relies entirely on ClickHouse's `ReplacingMergeTree` and the dedup view |
 
 ---
@@ -73,7 +75,7 @@ The writer must handle per-event append failures (skip the bad event, continue w
 | TC-03 | Insert event with empty `source_mode` | Stored as `"direct_ingest"` |
 | TC-04 | Insert event with `metadata = {"provider": "openai", "request_id": "req_1"}` | `metadata` column stores as ClickHouse `String` containing the correct JSON representation |
 | TC-05 | Insert event with nil `metadata` | `metadata` column stores as empty JSON object `"{}"` |
-| TC-06 | Insert same `(org_id, tenant_id, event_id)` twice | `usage_events` table has 2 rows; `usage_events_dedup_v` returns only the latest |
+| TC-06 | Insert same `(org_id, customer_id, event_id)` twice | `usage_events` table has 2 rows; `usage_events_dedup_v` returns only the latest |
 | TC-07 | Insert event with all fields populated | All columns match, no truncation or type errors |
 | TC-08 | Insert batch of 50,000 events | All 50,000 inserted, < 5s duration |
 | TC-09 | `batch.Append()` fails for 1 event in batch of 100 | 99 events inserted successfully; failed event skipped with warning |

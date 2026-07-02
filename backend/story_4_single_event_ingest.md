@@ -1,5 +1,7 @@
 # Story 4 — Single Event Ingest (`POST /v1/events`)
 
+> Aligned with ADR-001 (2026-07-01).
+
 > **Phase:** 0 — Core Event Ingestion Pipeline
 > **Depends on:** Story 1 (domain types), Story 2 (auth middleware, `GetKeyContext`), Story 3 (cache synchronization)
 > **Blocks:** Story 5 (batch shares validation + Kafka patterns)
@@ -37,8 +39,8 @@ This is the simplest complete path through the ingestion pipeline — one reques
 | # | Criterion |
 |---|---|
 | 7 | Handler extracts `KeyContext` from request context via `GetKeyContext(ctx)` (injected by Story 2 middleware) |
-| 8 | Call `event.EnrichFromKeyContext(kc)` — this sets/overrides `OrgID`, `TenantID`, `SourceMode`, `KeyID` according to the rules in Story 1 |
-| 9 | After enrichment, call `event.ToUsageEvent()` — normalizes `TenantID` from `CustomerID`, generates `EventID` if empty, sets `TimestampMs` if zero |
+| 8 | Call `event.EnrichFromKeyContext(kc)` — this sets/overrides `OrgID`, `CustomerID`, `SourceMode`, `KeyID` according to the rules in Story 1 |
+| 9 | After enrichment, call `event.ToUsageEvent()` — normalizes `CustomerID`, generates `EventID` if empty, sets `TimestampMs` if zero |
 
 ### Validation
 
@@ -55,7 +57,7 @@ This is the simplest complete path through the ingestion pipeline — one reques
 | 13 | If `SETNX` returns 0 (key already exists) → return `409 CONFLICT`, code `DUPLICATE_EVENT`, include the `event_id` in the response |
 | 14 | If `SETNX` returns 1 (key set) → continue processing |
 
-### Org & User Validation
+### Org & End-User Validation
 
 | # | Criterion |
 |---|---|
@@ -64,8 +66,8 @@ This is the simplest complete path through the ingestion pipeline — one reques
 | 17 | If not found in Redis → query PostgreSQL `SELECT 1 FROM organizations WHERE id = $1 AND status = 'active'` |
 | 18 | If PostgreSQL has the org → backfill Redis cache with TTL `1h`, continue |
 | 19 | If not in PostgreSQL either → return `403 FORBIDDEN`, code `UNKNOWN_ORG` |
-| 20 | **User check:** Look up `org:{org_id}:user:{user_id}` in Redis |
-| 21 | Same pattern: Redis → PostgreSQL `SELECT 1 FROM users WHERE id = $1 AND org_id = $2` → backfill cache or return `403 FORBIDDEN`, code `USER_NOT_IN_ORG` |
+| 20 | **End-user check:** Look up `org:{org_id}:enduser:{end_user_id}` in Redis |
+| 21 | Same pattern: Redis → PostgreSQL `SELECT 1 FROM end_users WHERE id = $1 AND org_id = $2` → backfill cache or return `403 FORBIDDEN`, code `USER_NOT_IN_ORG` |
 
 ### Kafka Publishing
 
@@ -91,7 +93,7 @@ This is the simplest complete path through the ingestion pipeline — one reques
 
 | # | Criterion |
 |---|---|
-| 32 | Log one structured line per request at `INFO` level containing: `event_id`, `org_id`, `tenant_id`, `user_id`, `source_mode`, `event_type`, `model`, `input_tokens`, `output_tokens`, `status` (success/error_code), `latency_ms` |
+| 32 | Log one structured line per request at `INFO` level containing: `event_id`, `org_id`, `customer_id`, `end_user_id`, `source_mode`, `event_type`, `model`, `input_tokens`, `output_tokens`, `status` (success/error_code), `latency_ms` |
 | 33 | On error, include `error_code` and `error_message` in the log line |
 | 34 | Use `slog` (Go standard library structured logger) |
 
@@ -106,7 +108,7 @@ This is the simplest complete path through the ingestion pipeline — one reques
 | TC-03 | Duplicate `event_id` within same org | `409 DUPLICATE_EVENT` |
 | TC-04 | Same `event_id` in different orgs | Both accepted (org-scoped idempotency) |
 | TC-05 | Org does not exist in Redis or Postgres | `403 UNKNOWN_ORG` |
-| TC-06 | User exists but not in the authenticated org | `403 USER_NOT_IN_ORG` |
+| TC-06 | End user exists but not in the authenticated org | `403 USER_NOT_IN_ORG` |
 | TC-07 | Missing required field (`event_type=""`) | `400`, validation error message names the field |
 | TC-08 | Invalid JSON body | `400 INVALID_JSON` |
 | TC-09 | Missing `Content-Type: application/json` | `415 UNSUPPORTED_MEDIA_TYPE` |
@@ -137,9 +139,9 @@ This is the simplest complete path through the ingestion pipeline — one reques
 |---|---|---|
 | `idem:{org_id}:{event_id}` | `SETNX` + `EXPIRE` | Event-level idempotency (TTL 24h) |
 | `org:{org_id}` | `GET` + `SET` (backfill) | Org existence cache (TTL 1h) |
-| `org:{org_id}:user:{user_id}` | `GET` + `SET` (backfill) | User-in-org membership cache (TTL 1h) |
+| `org:{org_id}:enduser:{end_user_id}` | `GET` + `SET` (backfill) | End-user-in-org membership cache (TTL 1h) |
 | `organizations` (Postgres) | `SELECT` (fallback) | Source of truth for org existence |
-| `users` (Postgres) | `SELECT` (fallback) | Source of truth for user-org membership |
+| `end_users` (Postgres) | `SELECT` (fallback) | Source of truth for end-user–org membership |
 | `usage-events` (Kafka) | `PUBLISH` | Event published for downstream consumers |
 
 ---
@@ -152,7 +154,7 @@ This is the simplest complete path through the ingestion pipeline — one reques
 | `KEY_REVOKED` | 401 | From auth middleware |
 | `KEY_EXPIRED` | 401 | From auth middleware |
 | `UNKNOWN_ORG` | 403 | Org not in Redis cache or PostgreSQL |
-| `USER_NOT_IN_ORG` | 403 | User not a member of the authenticated org |
+| `USER_NOT_IN_ORG` | 403 | End user not a member of the authenticated org |
 | `BAD_REQUEST` | 400 | Validation failed (missing/invalid field) |
 | `INVALID_JSON` | 400 | Body is not valid JSON |
 | `UNSUPPORTED_MEDIA_TYPE` | 415 | Content-Type is not `application/json` |
@@ -188,7 +190,7 @@ This is the simplest complete path through the ingestion pipeline — one reques
 - **Handler package layout:** Place in `internal/api/handler.go` (single event handler) and `internal/api/router.go` (mux setup).
 - **Kafka writer:** Initialize one `*kafka.Writer` at startup with `Async: true`, `BatchSize`, `BatchTimeout` from config. Do **not** create a new writer per request.
 - **Partition key:** `kafka.Message{Key: []byte(event.OrgID), ...}` — this ensures all events for an org land on the same partition, guaranteeing per-org ordering.
-- **Cache backfill pattern:** When an org or user is found in Postgres but not Redis, set the Redis key with an `EX` of `3600` (1 hour) before proceeding. This warms the cache for subsequent requests.
+- **Cache backfill pattern:** When an org or end user is found in Postgres but not Redis, set the Redis key with an `EX` of `3600` (1 hour) before proceeding. This warms the cache for subsequent requests.
 - **Idempotency scope:** Using `org_id` in the Redis key means the same `event_id` can be reused across different orgs. This matches the Kafka partitioning strategy.
 - **Response is 202, not 200:** The event is accepted but not yet committed to ClickHouse (that happens asynchronously via the analytics worker). 202 signals "accepted for processing".
 - **Kafka message headers:** Include `source_mode` and `event_type` as headers so downstream consumers can route without deserializing the full payload.

@@ -1,5 +1,7 @@
 # QuantumBilling User Story: API Key Management
 
+> Aligned with ADR-001 (2026-07-01).
+
 **QB-STORY-034** · Sprint 1 · Phase: Foundation
 
 ---
@@ -34,9 +36,11 @@
 
 ```
 End User (john@company.com)
-    └── API Key 1: "Production Key" — sk_prod_****abc123 — status: active
-    └── API Key 2: "Development Key" — sk_dev_****xyz789 — status: active
+    └── API Key 1: "Production Key" — sk-live-7Kx… — status: active
+    └── API Key 2: "Test Key" — sk-test-9Qz… — status: active
 ```
+
+Keys live in the canonical **`developer.api_keys`** table (schema `developer` — conflict C-3; the backend key DDL is merged in per ERD §5).
 
 ---
 
@@ -60,21 +64,20 @@ End User (john@company.com)
 3. Required fields: Key Name (e.g., "Production API Key").
 4. Optional fields: Expiration Date.
 5. On creation:
-   - Key is generated: format `sk_{env}_{prefix}_{random}` (e.g., `sk_prod_7Kx9Ab2C`)
+   - Key is generated: format `sk-live-{random}` (e.g., `sk-live-7Kx9Ab2C…`); test keys use `sk-test-{random}`
    - Full key is shown ONCE in a modal/dialog
    - User must copy the key immediately — it cannot be retrieved later
-   - Key hash is stored (never the plaintext)
+   - SHA-256 hash of the key is stored in `key_hash` (never the plaintext)
+   - The key is synced to LiteLLM as a `VerificationToken` (`token` = `key_hash`, per backend story_20), carrying the key's `budget_limit_usd`, `rate_limit_rpm`/`rate_limit_tpm`, and `allowed_models`
 
 ### API Key Structure
 
-6. API key format: `sk_{environment}_{8-char-prefix}_{32-char-random}`
-   - `sk` — QuantumBilling key prefix
-   - `environment` — `prod`, `dev`, or `test`
-   - `8-char-prefix` — used for display (e.g., `sk_prod_****7Kx9A`)
-   - `32-char-random` — the secret portion
+6. API key format: `sk-live-{random}` (production) / `sk-test-{random}` (test) — backend convention merged per ERD §5
+   - `sk-live-` — QuantumBilling live-key prefix
+   - `{random}` — the secret portion, cryptographically secure random
 
-7. The `8-char-prefix` is stored with the key for identification.
-8. The full key is NEVER stored — only its hash.
+7. The first 11 characters (`sk-live-xxx`) are stored as `key_prefix` for display and identification (e.g., `sk-live-7Kx…`).
+8. The full key is NEVER stored — only its SHA-256 hash in `key_hash` (= LiteLLM `VerificationToken.token`).
 
 ### API Key List
 
@@ -82,8 +85,8 @@ End User (john@company.com)
 10. ORG_ADMIN sees all API keys for all end users in their scope.
 11. API Key list shows:
     - Key Name
-    - Masked Key (e.g., `sk_prod_****7Kx9A`)
-    - Environment (Prod/Dev/Test)
+    - Masked Key = `key_prefix` (e.g., `sk-live-7Kx…`)
+    - Environment (Live/Test)
     - Status (Active, Expiring Soon, Expired, Revoked)
     - Last Used (timestamp or "Never")
     - Created Date
@@ -91,16 +94,18 @@ End User (john@company.com)
 
 ### API Key Status
 
-12. **Active:** Key can be used for API calls.
-13. **Expiring Soon:** Key expires within 30 days (warning state).
-14. **Expired:** Key has passed its expiration date.
-15. **Revoked:** Key was manually deleted/revoked.
+The stored lifecycle enum on `developer.api_keys.status` is `active | revoked | expired`.
+
+12. **Active:** Key can be used for API calls (`status = active`).
+13. **Expiring Soon:** UI-derived display state — `status = active` AND `expires_at` within 30 days. Not a stored status.
+14. **Expired:** Key has passed its expiration date (`status = expired`).
+15. **Revoked:** Key was manually revoked (`status = revoked`, `revoked_at` set).
 
 ### Revoke API Key
 
 16. END_USER can revoke their own keys.
 17. ORG_ADMIN / CUSTOMER can revoke keys in their scope.
-18. Revocation is immediate — the key cannot be used after revocation.
+18. Revocation is immediate — `status = revoked`, `revoked_at` set, and the LiteLLM token is set `blocked = true` (backend story_20); the key cannot be used after revocation.
 19. A revoked key cannot be un-revoked — must create a new key.
 
 ### API Key Expiration
@@ -113,19 +118,18 @@ End User (john@company.com)
 
 23. End user's application includes key in request:
     ```
-    Authorization: Bearer sk_prod_7Kx9Ab2C...
+    Authorization: Bearer sk-live-7Kx9Ab2C...
     ```
 24. API validates key:
-    - Key exists in database
-    - Key hash matches
-    - Key is not expired or revoked
+    - SHA-256 of the presented key matches a `key_hash` in `developer.api_keys`
+    - `status = active` (not `expired` or `revoked`)
     - End user is active
 25. If valid: request proceeds, usage is tracked
 26. If invalid: 401 Unauthorized returned
 
 ### Rate Limiting
 
-27. API keys are subject to rate limits (per plan configuration).
+27. API keys are subject to rate limits: per-key `rate_limit_rpm` / `rate_limit_tpm` (mirrored to LiteLLM `rpm_limit`/`tpm_limit`), plus plan-level policy configuration. A per-key `budget_limit_usd` caps spend.
 28. Rate limit headers returned on each response:
     - `X-RateLimit-Limit`
     - `X-RateLimit-Remaining`
@@ -145,6 +149,41 @@ End User (john@company.com)
 
 ---
 
+## Data Tables Used
+
+| Table | Schema | Operation | Key Columns |
+|-------|--------|-----------|-------------|
+| `api_keys` | `developer` | INSERT · SELECT · UPDATE | see canonical schema below |
+| `end_users` | `customer` | SELECT | `id, customer_id, org_id, status` |
+| `audit_logs` | `platform` | INSERT | `id, org_id, user_id, action, resource_type, resource_id, created_at` |
+| `security_audit_logs` | `audit` | INSERT | `id, org_id, api_key_id, customer_id, violation_type, created_at` |
+
+### Canonical Table Schema — `developer.api_keys`
+
+Canonical schema is `developer` (conflict C-3); the backend key DDL is merged into this single table per ERD §5.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID | PK |
+| `org_id` | UUID | FK → `identity.organizations.id` |
+| `customer_id` | UUID | FK → `customer.customers.id` (ADR-001 §2.1 vocabulary) |
+| `end_user_id` | UUID | FK → `customer.end_users.id` (nullable) |
+| `name` | TEXT | Key name (e.g., "Production API Key") |
+| `key_hash` | TEXT | SHA-256 of raw key; = LiteLLM `VerificationToken.token` |
+| `key_prefix` | TEXT | `sk-live-xxx` (11 chars) for display |
+| `source_mode` | TEXT | `direct_ingest` / `virtual_key` / `byok` |
+| `budget_limit_usd` | NUMERIC | Per-key budget cap |
+| `rate_limit_rpm` | INT | Requests/minute limit |
+| `rate_limit_tpm` | INT | Tokens/minute limit |
+| `allowed_models` | JSONB | Model allowlist (`['*']` if unrestricted) |
+| `status` | TEXT | `active` / `revoked` / `expired` |
+| `last_used_at` | TIMESTAMPTZ | |
+| `expires_at` | TIMESTAMPTZ | Nullable |
+| `revoked_at` | TIMESTAMPTZ | Nullable |
+| `created_at` | TIMESTAMPTZ | |
+
+---
+
 ## API Key Lifecycle
 
 ```
@@ -158,6 +197,8 @@ End User (john@company.com)
                       │ revoked  │
                       └──────────┘
 ```
+
+Stored status enum: `active | revoked | expired` ("Expiring Soon" is derived in the UI from `expires_at`).
 
 ---
 
@@ -173,7 +214,7 @@ End User (john@company.com)
 
 ### TC-02 — API key used for authentication
 
-**Given:** END_USER has API key `sk_prod_7Kx9Ab2C...`
+**Given:** END_USER has API key `sk-live-7Kx9Ab2C...`
 **When:** making an API call with the key
 **Then:** usage is recorded for the end user
 **And:** response includes rate limit headers
@@ -211,8 +252,9 @@ End User (john@company.com)
 
 ## Dependencies
 
-- Key hashing: bcrypt or sha256
-- Key generation: cryptographically secure random
+- Key hashing: SHA-256 (must equal LiteLLM `VerificationToken.token` for lookup — bcrypt is not usable here)
+- Key generation: cryptographically secure random; `sk-live-` / `sk-test-` prefix, first 11 chars stored as `key_prefix`
+- LiteLLM sync: key create/revoke provisions/blocks the corresponding `VerificationToken` (backend story_20)
 - Webhooks: `api_key.created`, `api_key.revoked`
-- Audit log: key creation and revocation logged
-- Rate limiting: per key or per end user
+- Audit (conflict C-7): key creation/revocation actor actions → `platform.audit_logs`; key-related security violations (invalid key, budget exhausted, rate limit) → `audit.security_audit_logs`
+- Rate limiting: per key (`rate_limit_rpm`/`rate_limit_tpm`) or per end user
