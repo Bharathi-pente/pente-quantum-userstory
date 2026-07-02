@@ -115,11 +115,12 @@ NON-GOALS: no business logic, no ingestion, no auth flows, no dashboard pages.
 Do not modify anything under docs/.
 
 DONE CRITERIA (all must be demonstrably true; record evidence in HANDOFF.md):
-- `docker compose up -d` (core profile) brings up postgres, redis-stack, kafka (KRaft)
-  with usage-events ×32 partitions, clickhouse, keycloak (shipped minimal realm
-  imported), kafka-ui — all healthy. LiteLLM/its Postgres (`--profile gateway`) and
-  prometheus/otel (`--profile observability`) are NOT required healthy here — the
-  gateway profile boots at D-06.
+- `docker compose up -d` (default/core services only — do NOT enable the gateway or
+  observability profiles; there is no literal `--profile core`) brings up postgres,
+  redis-stack, kafka (KRaft) with usage-events ×32 partitions, clickhouse, keycloak
+  (shipped minimal realm imported), kafka-ui — all healthy. LiteLLM/its Postgres
+  (`--profile gateway`) and prometheus/otel (`--profile observability`) are NOT
+  required healthy here — the gateway profile boots at D-06.
 - `npx prisma migrate dev` (in control-plane/) generates and applies the initial
   migration from schema.prisma with zero drift or errors — all 12 schemas created.
 - `engine/scripts/clickhouse-migrate.sh` creates events.usage_events + the dedup view;
@@ -144,9 +145,12 @@ SCAFFOLD.md and why, open items.
 You are building the QuantumBilling control-plane foundation (Phase CP per docs/BUILD_PLAN.md §3).
 
 READ FIRST: docs/BUILD_PLAN.md §3 Phase CP, docs/ARCHITECTURE_DECISION.md §2/§2.1,
-docs/uiflow/quantumbilling_organization_user_story.md, quantumbilling_organization_onboarding_user_story.md,
-quantumbilling_customer_user_story.md, quantumbilling_customer_management_user_story.md,
-quantumbilling_end_user_management_user_story.md, openapi/bff-core.yaml (orgs/customers/end-users paths).
+docs/uiflow/quantumbilling_organization_user_story.md,
+docs/uiflow/quantumbilling_organization_onboarding_user_story.md,
+docs/uiflow/quantumbilling_customer_user_story.md,
+docs/uiflow/quantumbilling_customer_management_user_story.md,
+docs/uiflow/quantumbilling_end_user_management_user_story.md,
+openapi/bff-core.yaml (orgs/customers/end-users paths).
 
 DELIVERABLES (all in control-plane/)
 1. Keycloak: EXTEND the shipped minimal realm at infra/keycloak/quantumbilling-realm.json
@@ -511,7 +515,7 @@ READ FIRST: docs/uiflow/quantumbilling_product_user_story.md,
 docs/uiflow/quantumbilling_pricing_user_story.md,
 docs/uiflow/quantumbilling_rate_cards_user_story.md,
 docs/uiflow/quantumbilling_contract_user_story.md,
-docs/uiflow/quantumbilling_subscription_user_story.md
+docs/uiflow/quantumbilling_subscription_user_story.md,
 (all rewritten — enums and columns are canonical),
 openapi/bff-core.yaml (catalog paths — the contract),
 docs/BILLING_MATH.md §1/§3 (anniversary + proration semantics you must record data for).

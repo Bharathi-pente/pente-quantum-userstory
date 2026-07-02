@@ -79,9 +79,10 @@ VERIFY, IN ORDER:
   (grep engine/ for float64 near cost/amount/balance identifiers).
 
 [Behavior — re-execute every D-00 done criterion from a clean state]
-- `docker compose down -v && docker compose up -d` (CORE profile only — litellm/
-  prometheus/otel are behind the gateway/observability profiles and NOT required
-  here): postgres, redis-stack, kafka, clickhouse, keycloak, kafka-ui all reach
+- `docker compose down -v && docker compose up -d` (default/core services only — do
+  NOT pass any --profile flag; litellm/prometheus/otel are behind the gateway/
+  observability profiles and NOT required here): postgres, redis-stack, kafka,
+  clickhouse, keycloak, kafka-ui all reach
   healthy; keycloak imported the shipped realm (realm quantumbilling exists with the
   five roles); verify kafka topic usage-events has 32 partitions (kafka-topics
   --describe); verify redis-stack has Bloom commands (BF.RESERVE test key).
