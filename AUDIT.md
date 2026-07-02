@@ -1,6 +1,6 @@
 # QuantumBilling — Dispatch Audit Plan
 
-**Status:** In progress (paired to DISPATCH.md, authored one unit at a time) · 2026-07-01
+**Status:** v1.1 — complete, aligned to DISPATCH.md v1.1 · 2026-07-02
 **Purpose:** Every dispatch unit D-XX is verified by an **independent audit agent** running the paired prompt A-XX below, in a fresh session, before any dependent unit is dispatched. The audit agent must not be the agent that built the unit.
 
 ## Audit contract (applies to every A-XX)
@@ -58,10 +58,16 @@ VERIFY, IN ORDER:
 [Existence]
 - Monorepo layout matches SCAFFOLD.md §1 exactly (engine/, control-plane/, gateway/,
   web/, openapi/, infra/, scripts/, docs/; Go module path as specified).
-- Copied artifacts are byte-identical to the spec repo (diff openapi/*.yaml,
-  prisma/schema.prisma, migrations/clickhouse/*.sql, docker-compose.yml, .env.example,
-  scripts/seed-dev.sql against docs/ originals). Any local edit to a copied contract
-  file is a BLOCKER unless HANDOFF.md justifies it and the spec repo was updated to match.
+- Copied artifacts are byte-identical to the spec repo: diff openapi/*.yaml,
+  control-plane/prisma/schema.prisma, engine/migrations/clickhouse/*.sql (NOTE the
+  monorepo location — the compose mount expects it there), docker-compose.yml,
+  .env.example, infra/** (keycloak realm, litellm/prometheus/otel stubs),
+  scripts/seed-dev.sql against their docs/ originals. Any local edit to a copied
+  contract file is a BLOCKER unless HANDOFF.md justifies it and the spec repo was
+  updated to match.
+- Preflight held: the working directory is an implementation monorepo with the spec
+  repo vendored at docs/ (docs/SCAFFOLD.md exists); no implementation files were
+  created inside the spec repo itself.
 - CODEOWNERS covers control-plane/prisma/schema.prisma; CI workflow exists with the
   SCAFFOLD §6 job order (lint → unit → migrate → integration).
 
@@ -73,9 +79,14 @@ VERIFY, IN ORDER:
   (grep engine/ for float64 near cost/amount/balance identifiers).
 
 [Behavior — re-execute every D-00 done criterion from a clean state]
-- `docker compose down -v && docker compose up -d`: all services reach healthy;
-  verify kafka topic usage-events has 32 partitions (kafka-topics --describe);
-  verify redis-stack has Bloom commands (BF.RESERVE test key).
+- `docker compose down -v && docker compose up -d` (CORE profile only — litellm/
+  prometheus/otel are behind the gateway/observability profiles and NOT required
+  here): postgres, redis-stack, kafka, clickhouse, keycloak, kafka-ui all reach
+  healthy; keycloak imported the shipped realm (realm quantumbilling exists with the
+  five roles); verify kafka topic usage-events has 32 partitions (kafka-topics
+  --describe); verify redis-stack has Bloom commands (BF.RESERVE test key).
+  Then `docker compose --profile gateway --profile observability config` parses
+  (services defined, even though not started until D-06).
 - Fresh `npx prisma migrate dev` on an empty database: applies cleanly; then
   `prisma migrate diff` against schema shows zero drift; \dn in psql lists all 12 schemas.
 - clickhouse-migrate.sh: creates table + view; second run is a no-op (assert unchanged
@@ -87,7 +98,12 @@ VERIFY, IN ORDER:
   match the seeded rows; the key_hash column equals sha256 of the dev key (recompute it).
 - /health endpoints 200; stop Redis, engine /ready must 503 within its timeout;
   restart Redis, /ready recovers.
-- CI: run the workflow locally (act) or re-trigger; all jobs green.
+- CI: run the workflow locally (act) or re-trigger; all jobs green. Independently run
+  scripts/verify-local.sh and confirm it exercises the same steps in the same order
+  (lint → unit → migrate → integration) and fails non-zero when a step is broken
+  (temporarily break one lint rule to prove it).
+- Git protocol: HANDOFF.md records BASE_SHA and COMMIT_SHA; `git diff BASE_SHA..COMMIT_SHA`
+  contains only the declared deliverables.
 
 [Drift]
 - git diff against the pre-D-00 state (or initial commit): flag any file outside the
@@ -313,7 +329,9 @@ file:line/evidence). Append it to AUDIT_LOG.md. Do not fix anything.
 - Enforcement matrix: below SOFT / at SOFT / between / at HARD / above HARD × with and
   without override — 10-cell truth table, verify header vs 429 per cell.
 - Pub/sub: counter increments publish deltas; subscribe and reconcile 100 events'
-  deltas sum = counter delta.
+  deltas sum = counter delta; the message contract is documented in HANDOFF.md.
+  (Dashboard live-update is checked here ONLY if D-08 was merged before D-11 —
+  otherwise it belongs to D-08's audit; do not fail D-11 for Track B's absence.)
 ```
 
 ## A-12 — Audit: invoice engine

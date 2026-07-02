@@ -1,19 +1,44 @@
 # QuantumBilling — Agentic Dispatch Plan
 
-**Status:** In progress (prompts authored one unit at a time) · 2026-07-01
+**Status:** v1.1 — complete, readiness-patched after external review · 2026-07-02
 **Companions:** [BUILD_PLAN.md](BUILD_PLAN.md) (sequence) · [AUDIT.md](AUDIT.md) (paired verification) · [SCAFFOLD.md](SCAFFOLD.md) · [BILLING_MATH.md](BILLING_MATH.md)
+
+## Preflight (before D-00, once)
+
+Dispatch prompts run from the **implementation monorepo root**, not from this spec repo. The orchestrator (human or agent) must first:
+
+1. Create a fresh implementation repository (empty, git-initialized).
+2. Copy this entire specification repo into it at `./docs/` (excluding `.git/`).
+3. Run every dispatch prompt from the implementation repo root.
+
+**Guard (in every session): if `docs/SCAFFOLD.md` does not exist relative to the working directory, STOP and ask for the correct repository — do not improvise a layout and do not build inside the spec repo.**
 
 ## How to use this document
 
-Each **dispatch unit** is one coding-agent session. Feed the unit's prompt to the agent **verbatim** — every prompt is self-contained: it names the documents to read, the exact deliverables, the non-goals, and the done criteria. Do not merge units into one session; the boundaries are where context resets safely.
+Each **dispatch unit** is one coding-agent session unless its header says otherwise; multi-session units contain an explicit **SESSION CHECKPOINT** line — end session 1 exactly there (commit + HANDOFF.md), and session 2 resumes from the HANDOFF. Feed the unit's prompt to the agent **verbatim** — every prompt is self-contained: it names the documents to read, the exact deliverables, the non-goals, and the done criteria. Do not merge units into one session; the boundaries are where context resets safely.
 
 Rules that apply to **every** unit (the prompts assume them):
 
-1. The agent works in the implementation monorepo (layout per SCAFFOLD.md §1). The docs repo is vendored at `docs/`.
+1. The agent works in the implementation monorepo (layout per SCAFFOLD.md §1) with the spec repo vendored at `docs/` (see Preflight). Never modify anything under `docs/`.
 2. Conventions are binding: SCAFFOLD.md §6 (IDs, snake_case wire JSON, decimal-string money, error envelope, TC-numbered tests, CI order). Billing arithmetic follows BILLING_MATH.md exactly.
 3. One-writer rule (ADR-001 §2): NestJS writes control-plane config; the Go billing worker writes financial artifacts; Prisma owns all Postgres DDL (SCAFFOLD.md §2).
-4. Done means: code + tests passing + the unit's done-criteria checklist demonstrably true + a `HANDOFF.md` note appended (what was built, deviations, open items) for the next session.
-5. After each unit, run the paired audit (AUDIT.md A-XX) with a **different** agent before dispatching the next dependent unit.
+4. **Git protocol:** before writing any code, record `git rev-parse HEAD` as `BASE_SHA` in the HANDOFF entry. Commit only this unit's changes (no unrelated formatting or dependency churn) and record the final `COMMIT_SHA`. The audit diffs `BASE_SHA..COMMIT_SHA`.
+5. **Verification:** where a done criterion says "CI passes", run `scripts/verify-local.sh` (created in D-00; runs the same steps as CI) when the hosted CI is unavailable, and record its output. Never claim remote CI success without a link/run id.
+6. Done means: code + tests passing + the unit's done-criteria checklist demonstrably true + a `HANDOFF.md` entry appended using this exact template:
+
+   ```markdown
+   ## D-XX — <title>
+   - BASE_SHA / COMMIT_SHA:
+   - Summary:
+   - Files changed:
+   - Commands run:
+   - Test results:
+   - Done-criteria evidence (one line per criterion):
+   - Deviations from the prompt (and why):
+   - Open items / follow-up risks:
+   ```
+
+7. After each unit, run the paired audit (AUDIT.md A-XX) with a **different** agent before dispatching the next **dependent** unit (parallel tracks don't wait on each other's audits).
 
 ## Dispatch ledger
 
@@ -35,9 +60,9 @@ Rules that apply to **every** unit (the prompts assume them):
 | D-13 | Track C: prepaid wallet + auto top-up | C | D-11 | ✅ below | ☐ |
 | D-14 | Track C: auto-collection + dunning | C | D-12 | ✅ below | ☐ |
 | D-15 | Track C: re-rating + credit notes | C | D-12 | ✅ below | ☐ |
-| D-16 | Post-core: rev-rec + rollup job | Post | D-12 | ✅ below | ☐ |
+| D-16 | Post-core: rev-rec + rollup job | Post | D-12, D-13 | ✅ below | ☐ |
 | D-17 | Post-core: simulation + billing groups + margin | Post | D-12 | ✅ below | ☐ |
-| D-18 | Post-core: warehouse export + reports/webhooks/alerts UI | Post | D-16 | ✅ below | ☐ |
+| D-18 | Post-core: warehouse export + reports/webhooks/alerts UI | Post | D-13, D-14, D-15, D-16 (D-17 only for margin report type) | ✅ below | ☐ |
 
 Parallelism: after D-04, tracks A (D-05/06), B (D-07/08), and C (D-09→15) may run concurrently in separate sessions/worktrees — they touch disjoint services by construction.
 
@@ -59,9 +84,11 @@ DELIVERABLES
    TypeScript strict), gateway/ (Python 3.12, uv or poetry), web/ (Next.js App Router,
    TypeScript, Tailwind, shadcn/ui init, TanStack Query, next-auth with Keycloak
    provider — configured, no pages beyond a health page), openapi/, infra/, scripts/, docs/.
-2. Copy verbatim from the spec repo: openapi/*.yaml, prisma/schema.prisma →
-   control-plane/prisma/, migrations/clickhouse/ → engine/migrations/clickhouse/,
-   docker-compose.yml + .env.example → repo root, scripts/seed-dev.sql → scripts/.
+2. Copy verbatim from docs/ (the vendored spec repo): docs/openapi/*.yaml → openapi/,
+   docs/prisma/schema.prisma → control-plane/prisma/, docs/migrations/clickhouse/ →
+   engine/migrations/clickhouse/ (the compose file expects this path),
+   docs/docker-compose.yml + docs/.env.example → repo root, docs/infra/ → infra/
+   (keycloak realm, litellm/prometheus/otel stubs), docs/scripts/seed-dev.sql → scripts/.
 3. Write engine/scripts/clickhouse-migrate.sh: applies engine/migrations/clickhouse/*.sql
    in filename order against $CLICKHOUSE_URL, tracks applied files in a
    events.schema_migrations table, idempotent.
@@ -76,14 +103,23 @@ DELIVERABLES
    (skeleton tests are fine; the pipeline shape is the deliverable).
 7. CODEOWNERS: control-plane/prisma/schema.prisma requires engine-team review for
    billing.* model changes (SCAFFOLD.md §2).
-8. Top-level README.md: the SCAFFOLD.md §5 dev loop, copy-pasteable.
+8. scripts/verify-local.sh: runs the exact CI steps locally in the same order
+   (lint → unit → prisma migrate deploy against the compose Postgres → integration)
+   and exits non-zero on any failure — this is the offline substitute every later
+   unit uses when hosted CI is unreachable (global rule 5).
+9. Top-level README.md: the SCAFFOLD.md §5 dev loop, copy-pasteable, including the
+   compose profile usage (core by default; --profile gateway at D-06;
+   --profile observability optional).
 
 NON-GOALS: no business logic, no ingestion, no auth flows, no dashboard pages.
 Do not modify anything under docs/.
 
 DONE CRITERIA (all must be demonstrably true; record evidence in HANDOFF.md):
-- `docker compose up -d` brings up postgres ×2, redis-stack, kafka (KRaft) with
-  usage-events ×32 partitions, clickhouse, keycloak, litellm, kafka-ui — all healthy.
+- `docker compose up -d` (core profile) brings up postgres, redis-stack, kafka (KRaft)
+  with usage-events ×32 partitions, clickhouse, keycloak (shipped minimal realm
+  imported), kafka-ui — all healthy. LiteLLM/its Postgres (`--profile gateway`) and
+  prometheus/otel (`--profile observability`) are NOT required healthy here — the
+  gateway profile boots at D-06.
 - `npx prisma migrate dev` (in control-plane/) generates and applies the initial
   migration from schema.prisma with zero drift or errors — all 12 schemas created.
 - `engine/scripts/clickhouse-migrate.sh` creates events.usage_events + the dedup view;
@@ -92,8 +128,10 @@ DONE CRITERIA (all must be demonstrably true; record evidence in HANDOFF.md):
 - `scripts/warm-redis.sh` populates apikey:* and org existence keys (verify with redis-cli).
 - All /health endpoints return 200; engine /ready returns 200 with all deps up and 503
   with Redis stopped.
-- CI workflow passes end-to-end on the bootstrap commit.
-Append HANDOFF.md: versions chosen, any deviation from SCAFFOLD.md and why, open items.
+- CI workflow passes end-to-end on the bootstrap commit, and scripts/verify-local.sh
+  reproduces the same result locally.
+Append HANDOFF.md (template in global rule 6): versions chosen, any deviation from
+SCAFFOLD.md and why, open items.
 ```
 
 ---
@@ -111,9 +149,11 @@ quantumbilling_customer_user_story.md, quantumbilling_customer_management_user_s
 quantumbilling_end_user_management_user_story.md, openapi/bff-core.yaml (orgs/customers/end-users paths).
 
 DELIVERABLES (all in control-plane/)
-1. Keycloak: realm export infra/keycloak/quantumbilling-realm.json (roles SUPER_ADMIN,
-   ORG_ADMIN, CUSTOMER, END_USER, DEVELOPER; a confidential client for the BFF), loaded
-   by compose. NestJS JWT validation + role guards (OrgAdminGuard, SuperAdminGuard, etc.).
+1. Keycloak: EXTEND the shipped minimal realm at infra/keycloak/quantumbilling-realm.json
+   (it already has the five roles + the qb BFF client) with whatever D-01 needs — test
+   users per role, protocol mappers/claims — keeping that file the committed source of
+   truth reimported by compose. NestJS JWT validation + role guards (OrgAdminGuard,
+   SuperAdminGuard, etc.).
 2. Modules: identity (organizations CRUD + suspend per C-14 status set, invitations,
    roles), customer (customers CRUD, ACTIVE|SUSPENDED|CHURNED state machine, contacts),
    end-users (CRUD under customer, active|suspended|canceled). Endpoints and error codes
@@ -150,9 +190,10 @@ Append HANDOFF.md.
 You are building the Go ingest API (Phase 0) for QuantumBilling.
 
 READ FIRST: docs/backend/phase_0_event_ingestion_pipeline.md,
-docs/backend/story_1_domain_types_and_validation.md, story_2_redis_auth_provider.md,
-story_4_single_event_ingest.md, openapi/event-engine.yaml (POST /v1/events),
-docs/SCAFFOLD.md §6.
+docs/backend/story_1_domain_types_and_validation.md,
+docs/backend/story_2_redis_auth_provider.md,
+docs/backend/story_4_single_event_ingest.md,
+openapi/event-engine.yaml (POST /v1/events), docs/SCAFFOLD.md §6.
 
 DELIVERABLES (all in engine/)
 1. internal/models: UsageEvent + KeyContext exactly per story_1 (renamed fields
@@ -189,8 +230,9 @@ Append HANDOFF.md.
 You are completing Phase 0: the batch ingest path and the cache synchronization daemon.
 
 READ FIRST: docs/backend/story_5_batch_event_ingest.md,
-story_3_cache_synchronization_and_key_management_daemon.md, openapi/event-engine.yaml
-(POST /v1/events/batch), docs/BILLING_MATH.md M-1 (money stays decimal-string).
+docs/backend/story_3_cache_synchronization_and_key_management_daemon.md,
+openapi/event-engine.yaml (POST /v1/events/batch),
+docs/BILLING_MATH.md M-1 (money stays decimal-string).
 
 DELIVERABLES (engine/)
 1. POST /v1/events/batch per story_5: max 50,000 events (413 over), streaming JSON
@@ -224,9 +266,11 @@ Append HANDOFF.md.
 ```text
 You are building the analytics worker: Kafka → ClickHouse, the usage source of truth.
 
-READ FIRST: docs/backend/phase_1_analytics_worker.md, story_7 (topics — mostly done in
-compose), story_8_kafka_consumer.md, story_9_clickhouse_writer.md,
-story_10_batch_orchestration_health_observability.md.
+READ FIRST: docs/backend/phase_1_analytics_worker.md,
+docs/backend/story_7_kafka_setup_and_topic_configuration.md (topics — mostly done in compose),
+docs/backend/story_8_kafka_consumer.md,
+docs/backend/story_9_clickhouse_writer.md,
+docs/backend/story_10_batch_orchestration_health_observability.md.
 
 DELIVERABLES (engine/cmd/analytics-worker + internal/)
 1. Consumer group analytics-v1: batch fetch (10k/2s per phase_1), JSON deserialize to
@@ -258,9 +302,13 @@ Append HANDOFF.md. Milestone: from here Tracks A/B/C may run in parallel session
 ```text
 You are building the key-management service (Phase 3).
 
-READ FIRST: docs/backend/phase_3_key_creation_flow.md, story_11, story_12, story_13,
-story_14, openapi/event-engine.yaml (keys paths), docs/ARCHITECTURE_DECISION.md §7
-(KMS note — dev uses BYOK_MASTER_KEY).
+READ FIRST: docs/backend/phase_3_key_creation_flow.md,
+docs/backend/story_11_key_generation_and_storage.md,
+docs/backend/story_12_key_revocation_and_listing.md,
+docs/backend/story_13_byok_encryption_and_registration.md,
+docs/backend/story_14_security_audit_logging.md,
+openapi/event-engine.yaml (keys paths),
+docs/ARCHITECTURE_DECISION.md §7 (KMS note — dev uses BYOK_MASTER_KEY).
 
 DELIVERABLES (engine/cmd/keys-api)
 1. POST /v1/keys per story_11: sk-live- + 32 random bytes, SHA-256 → developer.api_keys
@@ -293,12 +341,18 @@ Append HANDOFF.md.
 ```text
 You are integrating the LiteLLM gateway (Phase 5).
 
-READ FIRST: docs/backend/phase_5_litellm_gateway_integration.md, stories 20–24,
-docs/backend/story_22 (wallet interplay note).
+READ FIRST: docs/backend/phase_5_litellm_gateway_integration.md,
+docs/backend/story_20_key_provisioning_sync_litellm.md,
+docs/backend/story_21_usage_event_callback.md,
+docs/backend/story_22_budget_rate_limit_sync.md (incl. the wallet-interplay note),
+docs/backend/story_23_byok_decryption_provider_routing.md,
+docs/backend/story_24_gateway_deployment_health_observability.md.
 
 DELIVERABLES (gateway/)
-1. LiteLLM config.yaml + compose wiring (image is already up from D-00): model list
-   with at least one mock/echo provider for tests plus real provider config templates.
+1. Enable the `gateway` compose profile (docker compose --profile gateway up -d —
+   LiteLLM + its Postgres boot now, not at D-00) and REPLACE the shipped stub
+   infra/litellm/proxy_server_config.yaml: model list with at least one mock/echo
+   provider for tests plus real provider config templates.
 2. Key provisioning sync per story_20: on keys-api create/revoke, upsert LiteLLM
    VerificationToken (token = same SHA-256, metadata {source_mode, org_id, customer_id,
    key_id}, blocked on revoke). Implement as a sync module in keys-api calling LiteLLM
@@ -330,9 +384,14 @@ Append HANDOFF.md.
 ```text
 You are building the analytics API service (Phase 4): 18 read endpoints over ClickHouse.
 
-READ FIRST: docs/backend/phase_4_aggregation_analytics_reporting_apis.md, stories 15–19,
-openapi/analytics.yaml (THE contract — implement to it), docs/SCAFFOLD.md §3 (service
-token auth).
+READ FIRST: docs/backend/phase_4_aggregation_analytics_reporting_apis.md,
+docs/backend/story_15_organization_and_tenant_summaries.md,
+docs/backend/story_16_user_analytics_and_details.md,
+docs/backend/story_17_time_series_trends.md,
+docs/backend/story_18_model_and_service_usage.md,
+docs/backend/story_19_cost_and_billing_reporting.md,
+openapi/analytics.yaml (THE contract — implement to it),
+docs/SCAFFOLD.md §3 (service token auth).
 
 DELIVERABLES (engine/cmd/analytics-api)
 1. All 18 endpoints per openapi/analytics.yaml, reading ONLY events.usage_events_dedup_v,
@@ -346,8 +405,10 @@ DELIVERABLES (engine/cmd/analytics-api)
    (kin-openapi or schemathesis); stories' TC lists.
 
 DONE CRITERIA:
-- Seeded + D-06-generated events: org summary totals equal a hand-run ClickHouse SQL
-  check; daily series for a 7-day window returns exactly 7 buckets with zeros where empty.
+- Using seeded events plus the D-04 fixture generator (do NOT depend on D-06/gateway
+  traffic — Track A may not exist yet): org summary totals equal a hand-run ClickHouse
+  SQL check; daily series for a 7-day window returns exactly 7 buckets with zeros where
+  empty.
 - Org-scoped token requesting another org → 403. Customer-scoped token sees only its
   customer's rows (verify against raw SQL).
 - Contract test suite green against the live service.
@@ -357,15 +418,18 @@ Append HANDOFF.md.
 
 ## D-08 — Track B: BFF proxy + dashboards
 
-**Session budget:** 1–2 sessions · **Depends on:** D-07 · **Audit:** A-08
+**Session budget:** 1–2 sessions (checkpoint below) · **Depends on:** D-07 · **Audit:** A-08
 
 ```text
 You are building the BFF usage proxy and the five usage dashboards.
 
 READ FIRST: docs/ARCHITECTURE_DECISION.md §2 (BFF), docs/SCAFFOLD.md §3/§4,
-docs/uiflow/quantumbilling_organization_overview_user_story.md, team_usage,
-platform_analytics, end_user_dashboard, end_user_events stories, openapi/bff-core.yaml
-(usage proxy paths).
+docs/uiflow/quantumbilling_organization_overview_user_story.md,
+docs/uiflow/quantumbilling_team_usage_user_story.md,
+docs/uiflow/quantumbilling_platform_analytics_user_story.md,
+docs/uiflow/quantumbilling_end_user_dashboard_user_story.md,
+docs/uiflow/quantumbilling_end_user_events_user_story.md,
+openapi/bff-core.yaml (usage proxy paths).
 
 DELIVERABLES
 1. control-plane: BFF proxy module — validates Keycloak JWT, resolves scope, mints the
@@ -379,6 +443,10 @@ DELIVERABLES
    updates:{org_id} (full push lands with D-11 counters).
 3. Playwright e2e: login as each role via Keycloak, assert data renders and forbidden
    routes redirect.
+
+SESSION CHECKPOINT: if this takes two sessions, session 1 ends after deliverable 1
+(BFF proxy, tested) — commit + HANDOFF.md; session 2 resumes from the HANDOFF and
+delivers 2–3 (pages + Playwright).
 
 NON-GOALS: billing pages (invoices/wallet — D-12/D-13 UI), admin catalog UI (D-10).
 
@@ -400,8 +468,10 @@ Append HANDOFF.md.
 You are building the two prerequisites of the billing worker: test clocks and the
 rating engine. Both are pure-logic heavy — this unit is mostly tests.
 
-READ FIRST: docs/backend/story_33_test_clocks.md, story_27_rate_resolution_engine.md,
-docs/BILLING_MATH.md (§1 time rules, §2 money, W-2 cache), docs/ARCHITECTURE_DECISION.md §3.3.
+READ FIRST: docs/backend/story_33_test_clocks.md,
+docs/backend/story_27_rate_resolution_engine.md,
+docs/BILLING_MATH.md (§1 time rules, §2 money, W-2 cache),
+docs/ARCHITECTURE_DECISION.md §3.3.
 
 DELIVERABLES (engine/internal/clock, engine/internal/rating)
 1. BillingClock per story_33: Now(org_id) resolves platform.test_clocks for sandbox
@@ -431,16 +501,20 @@ Append HANDOFF.md.
 
 ## D-10 — Track C: catalog/pricing/subscription control plane
 
-**Session budget:** 1–2 sessions · **Depends on:** D-01 · **Audit:** A-10
+**Session budget:** 1–2 sessions (checkpoint below) · **Depends on:** D-01 · **Audit:** A-10
 
 ```text
 You are building the control-plane catalog: products, plans, pricing, rate cards,
 contracts, subscriptions.
 
-READ FIRST: docs/uiflow/quantumbilling_product_user_story.md, pricing, rate_cards,
-contract, subscription stories (all rewritten — enums and columns are canonical),
-openapi/bff-core.yaml (catalog paths — the contract), docs/BILLING_MATH.md §1/§3
-(anniversary + proration semantics you must record data for).
+READ FIRST: docs/uiflow/quantumbilling_product_user_story.md,
+docs/uiflow/quantumbilling_pricing_user_story.md,
+docs/uiflow/quantumbilling_rate_cards_user_story.md,
+docs/uiflow/quantumbilling_contract_user_story.md,
+docs/uiflow/quantumbilling_subscription_user_story.md
+(all rewritten — enums and columns are canonical),
+openapi/bff-core.yaml (catalog paths — the contract),
+docs/BILLING_MATH.md §1/§3 (anniversary + proration semantics you must record data for).
 
 DELIVERABLES (control-plane/)
 1. CRUD per the stories/spec: products (state machine DRAFT→ACTIVE→INACTIVE→ARCHIVED,
@@ -458,6 +532,10 @@ DELIVERABLES (control-plane/)
 4. Pub/sub rate-change notifications (the D-09 cache invalidation source).
 5. e2e tests per stories' TCs: full flow product→plan→charges→rate card→contract→
    subscription via API.
+
+SESSION CHECKPOINT: if two sessions, session 1 ends after deliverables 1–2 (catalog
+CRUD + versioning, tested) — commit + HANDOFF.md; session 2 delivers 3–5
+(subscriptions, pub/sub, e2e).
 
 DONE CRITERIA:
 - The full catalog flow via API produces a subscription whose plan_version and pinned
@@ -491,7 +569,10 @@ DELIVERABLES (engine/cmd/billing-worker, partial)
    HARD → 429, customer limit_overrides take precedence, wallet-balance check stubbed
    to "always allowed" until D-13 (leave the seam + TODO referencing D-13). Redis-only
    hot path.
-4. Wire the D-08 WebSocket push to the real updates:{org_id} stream.
+4. Publish the updates:{org_id} delta stream and DOCUMENT its message contract in
+   HANDOFF.md. If D-08 (Track B) is already merged, wire its WebSocket push to this
+   stream; if not, leave the documented contract for D-08's follow-up — do NOT block
+   on Track B.
 5. Load test: enforcement endpoint under concurrent load.
 
 DONE CRITERIA (Milestone M3 first half):
@@ -502,13 +583,15 @@ DONE CRITERIA (Milestone M3 first half):
 - Enforcement P99 < 5ms measured under load (record numbers); zero Postgres/ClickHouse
   queries on the hot path (prove via query logs).
 - SOFT limit crossing → warning header; HARD → 429; override honored above plan limit.
-- Org overview dashboard updates live via WebSocket when events flow.
+- Pub/Sub deltas verified by a test subscriber reconciling 100 events' deltas against
+  the counter delta. (Conditional: if D-08 is merged, the org overview dashboard also
+  updates live via WebSocket — otherwise this moves to D-08's integration check.)
 Append HANDOFF.md.
 ```
 
 ## D-12 — Track C: credits/FEFO + invoice engine (golden test)
 
-**Session budget:** 2 sessions · **Depends on:** D-11 · **Audit:** A-12
+**Session budget:** 2 sessions (checkpoint below) · **Depends on:** D-11 · **Audit:** A-12
 
 ```text
 You are building the invoice engine — the heart of the system. BILLING_MATH.md is
@@ -537,6 +620,10 @@ DELIVERABLES (engine/internal/invoice + billing-worker wiring)
 5. Reproducibility test: run the invoice function twice on identical inputs →
    byte-identical invoice JSON; run after inserting an unrelated org's events → unchanged.
 
+SESSION CHECKPOINT: session 1 ends after deliverables 1, 2, 4, 5 (engine + golden +
+reproducibility, all green) — commit + HANDOFF.md; session 2 delivers 3 (BFF read
+endpoints + web invoice pages).
+
 DONE CRITERIA (Milestone M4):
 - Golden test green.
 - Advance a sandbox org one full month → draft invoice at period end + grace →
@@ -557,10 +644,10 @@ Append HANDOFF.md.
 ```text
 You are building the prepaid wallet (CR-2).
 
-READ FIRST: docs/backend/story_25_wallet_and_auto_topup.md, docs/BILLING_MATH.md §5
-(normative for hot-path rating) + M-6 (Lua decimal, NOT INCRBYFLOAT),
-openapi/event-engine.yaml + bff-core.yaml (wallet paths), docs/uiflow/
-quantumbilling_credits_user_story.md (wallet UI sections).
+READ FIRST: docs/backend/story_25_wallet_and_auto_topup.md,
+docs/BILLING_MATH.md §5 (normative for hot-path rating) + M-6 (Lua decimal, NOT INCRBYFLOAT),
+openapi/event-engine.yaml + openapi/bff-core.yaml (wallet paths),
+docs/uiflow/quantumbilling_credits_user_story.md (wallet UI sections).
 
 DELIVERABLES
 1. engine: wallet balance in Redis as decimal string via Lua compare-and-set; burndown
@@ -594,10 +681,11 @@ Append HANDOFF.md.
 ```text
 You are building payment collection (CR-6) and dunning.
 
-READ FIRST: docs/backend/story_28_payment_auto_collection.md, docs/uiflow/
-quantumbilling_dunning_user_story.md, quantumbilling_payment_user_story.md,
-quantumbilling_payment_method_management_user_story.md, openapi/bff-core.yaml
-(payments/methods paths).
+READ FIRST: docs/backend/story_28_payment_auto_collection.md,
+docs/uiflow/quantumbilling_dunning_user_story.md,
+docs/uiflow/quantumbilling_payment_user_story.md,
+docs/uiflow/quantumbilling_payment_method_management_user_story.md,
+openapi/bff-core.yaml (payments/methods paths).
 
 DELIVERABLES
 1. control-plane: payment methods CRUD (Stripe SetupIntent tokenization, method_type/
@@ -658,20 +746,22 @@ Append HANDOFF.md.
 
 ## D-16 — Post-core: rev-rec ledger + usage rollup
 
-**Session budget:** 1 session · **Depends on:** D-12 · **Audit:** A-16
+**Session budget:** 1 session · **Depends on:** D-12, D-13 (wallet — deferral entries need real top-ups) · **Audit:** A-16
 
 ```text
 You are building revenue recognition (CR-5) and the usage-summary rollup.
 
 READ FIRST: docs/backend/story_29_revenue_recognition_ledger.md,
-story_30_usage_summary_rollup_job.md, docs/BILLING_MATH.md §6 (grants), docs/uiflow/
-quantumbilling_usage_limits_user_story.md (display contract for usage_summary).
+docs/backend/story_30_usage_summary_rollup_job.md,
+docs/BILLING_MATH.md §6 (grants),
+docs/uiflow/quantumbilling_usage_limits_user_story.md (display contract for usage_summary).
 
 DELIVERABLES
 1. Rev-rec per story_29: deferral entries on wallet top-ups/prepaid credit purchases;
    recognition on consumption (credit ledger + ClickHouse burndown); ratable base fees
-   over the service period; commit true-up entries (wire the D-15 seam); locked
-   period-close report; CSV export (ERP connectors deferred).
+   over the service period; commit true-up entries (wire the D-15 re-rating hook if
+   D-15 is merged; otherwise define and document the hook interface — do not block on
+   D-15); locked period-close report; CSV export (ERP connectors deferred).
 2. Rollup per story_30: watermark-incremental job ClickHouse dedup view →
    customer.usage_summary, anniversary-aligned windows, idempotent replace-style
    upserts, drift-vs-Redis logging. Wire the usage-limits UI to it.
@@ -692,9 +782,10 @@ Append HANDOFF.md.
 ```text
 You are building pricing simulation (CR-9), billing groups (CR-8), margin analytics (CR-11).
 
-READ FIRST: docs/backend/story_31_pricing_simulation.md, story_32_billing_groups.md,
-story_34_margin_analytics.md, docs/uiflow/quantumbilling_rate_cards_user_story.md
-(simulation UI section).
+READ FIRST: docs/backend/story_31_pricing_simulation.md,
+docs/backend/story_32_billing_groups.md,
+docs/backend/story_34_margin_analytics.md,
+docs/uiflow/quantumbilling_rate_cards_user_story.md (simulation UI section).
 
 DELIVERABLES
 1. Simulation per story_31: async job replaying draft rate cards/plans over historical
@@ -719,14 +810,16 @@ Append HANDOFF.md.
 
 ## D-18 — Post-core: warehouse export + remaining ops UI
 
-**Session budget:** 1–2 sessions · **Depends on:** D-16 · **Audit:** A-18
+**Session budget:** 1–2 sessions (checkpoint below) · **Depends on:** D-13, D-14, D-15, D-16 (webhook event catalog spans wallet/payment/credit-note/rerating events); D-17 additionally required only for the margin report type · **Audit:** A-18
 
 ```text
 You are closing out: warehouse export (CR-13) and the remaining ops surfaces.
 
-READ FIRST: docs/backend/story_35_warehouse_export.md, docs/uiflow/
-quantumbilling_reports_user_story.md, quantumbilling_webhook_user_story.md,
-quantumbilling_alerts_user_story.md, quantumbilling_audit_and_compliance_user_story.md.
+READ FIRST: docs/backend/story_35_warehouse_export.md,
+docs/uiflow/quantumbilling_reports_user_story.md,
+docs/uiflow/quantumbilling_webhook_user_story.md,
+docs/uiflow/quantumbilling_alerts_user_story.md,
+docs/uiflow/quantumbilling_audit_and_compliance_user_story.md.
 
 DELIVERABLES
 1. Export per story_35: per-org export configs, watermark-incremental S3-parquet sync
@@ -741,6 +834,10 @@ DELIVERABLES
 4. Alerts + audit/compliance UI pages per their stories (alert CRUD + channels,
    audit-log viewer over platform.audit_logs, GDPR export/delete requests wired to
    the retention/anonymization jobs).
+
+SESSION CHECKPOINT: if two sessions, session 1 ends after deliverables 1 + 3
+(export + webhooks/outbox, tested) — commit + HANDOFF.md; session 2 delivers 2 + 4
+(reports, alerts, compliance UI).
 
 DONE CRITERIA:
 - Export run lands valid parquet in MinIO; second run exports only the increment
