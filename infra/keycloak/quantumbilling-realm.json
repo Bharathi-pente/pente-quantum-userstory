@@ -2,6 +2,12 @@
   "realm": "quantumbilling",
   "enabled": true,
   "displayName": "QuantumBilling",
+  "accessTokenLifespan": 1800,
+  "ssoSessionIdleTimeout": 86400,
+  "ssoSessionMaxLifespan": 86400,
+  "refreshTokenMaxReuse": 0,
+  "clientSessionIdleTimeout": 7200,
+  "clientSessionMaxLifespan": 7200,
   "roles": {
     "realm": [
       { "name": "SUPER_ADMIN", "description": "Platform administrator" },

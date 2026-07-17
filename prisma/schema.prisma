@@ -921,6 +921,18 @@ model OnboardingProgress {
   @@schema("identity")
 }
 
+model UserOrgAssignment {
+  id         String   @id @default(uuid()) @db.Uuid
+  username   String   @unique
+  orgId      String   @map("org_id") @db.Uuid
+  customerId String?  @map("customer_id") @db.Uuid
+  endUserId  String?  @map("end_user_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("user_org_assignments")
+  @@schema("identity")
+}
+
 // =============================================================================
 // §2 CUSTOMER DOMAIN
 // =============================================================================
